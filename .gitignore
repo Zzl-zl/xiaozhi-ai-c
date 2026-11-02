@@ -1,0 +1,22 @@
+﻿# 构建产物
+build/
+sdkconfig
+sdkconfig.old
+sdkconfig.bak*
+*.bin
+*.elf
+*.map
+
+# 依赖（由 idf_component.yml 自动拉取）
+managed_components/
+
+# 敏感信息
+main/wifi_config.h
+
+# 本地生成/备份
+.vscode/
+/font_gb.c
+/font_gb2312_16.c
+*.log
+serial_capture*.txt
+

@@ -1,0 +1,39 @@
+idf_component_register(
+    SRCS
+        "app_main.c"
+        "mic.c"
+        "speaker.c"
+        "opus_codec.c"
+        "wifi.c"
+        "button.c"
+        "display.c"
+        "weather.c"
+        "camera.c"
+        "music.c"
+        "mcp_tools.c"
+        "wake_word.c"
+        "xiaozhi_app.c"
+        "font_gb2312_16.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        esp_driver_i2s
+        esp_driver_gpio
+        esp_driver_spi
+        esp_lcd
+        esp_timer
+        nvs_flash
+        esp_wifi
+        esp_netif
+        esp_event
+        esp_xiaozhi
+        esp_audio_codec
+        esp-sr
+        lvgl
+        esp32-camera
+        esp_http_client
+        esp_http_server
+        esp-tls
+        esp_netif
+        mbedtls
+        cjson
+)
