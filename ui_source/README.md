@@ -3,6 +3,21 @@
 这里的 PNG 是**可直接编辑的源素材**。改完后运行 `..\tools\build_ui.py`，
 会自动重新生成 `main/whale_anim.c` 和 `main/whale_assets.c`，再编译即可。
 
+
+## 素材规则（重要）
+
+**所有新生成的 UI 图片都直接放进本目录，用同名覆盖旧文件，不要新建 v2/新版本文件夹。**
+
+| 内容 | 放哪 | 命名 |
+|---|---|---|
+| 静态图（角色/图标/背景） | assets/ | 保持现有文件名 |
+| 主界面动画帧 | frames/ | f00~f07.png |
+| 开机动画帧 | frames_boot/ | b00~b29.png |
+| 预览图/GIF | preview/ | preview_xxx |
+| 原始素材（大图） | raw/ | 原样保留 |
+
+覆盖后运行 python ../tools/build_ui.py 重建 C 数组和 assets.bin，再编译烧录。
+
 ## 目录
 
 ```
