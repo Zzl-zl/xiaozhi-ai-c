@@ -148,7 +148,34 @@ def build_assets():
     print('whale_assets.c -> %.1f MB' % (os.path.getsize(c_path) / 1048576.0))
 
 
+
+BOOT_FRAME_COUNT = 30
+BOOT_SIZE = 240
+
+
+def build_boot_anim():
+    """开机 30 帧 -> main/assets.bin（烧到 assets 分区 0xB00000）"""
+    files = sorted(glob.glob(os.path.join(UI, 'frames_boot', 'b*.png')))
+    if len(files) != BOOT_FRAME_COUNT:
+        sys.exit('frames_boot 目录应有 %d 张 b*.png，实际 %d 张' % (BOOT_FRAME_COUNT, len(files)))
+    buf = bytearray()
+    for p in files:
+        buf += to_rgb565(load(p, BOOT_SIZE, os.path.basename(p)))
+    bin_path = os.path.join(OUT, 'assets.bin')
+    with open(bin_path, 'wb') as f:
+        f.write(buf)
+    h_path = os.path.join(OUT, 'boot_anim.h')
+    with open(h_path, 'w', encoding='utf-8') as f:
+        f.write('#pragma once\n\n')
+        f.write('#define BOOT_ANIM_W %d\n#define BOOT_ANIM_H %d\n#define BOOT_ANIM_N %d\n'
+                % (BOOT_SIZE, BOOT_SIZE, BOOT_FRAME_COUNT))
+        f.write('#define BOOT_ANIM_FRAME_BYTES (BOOT_ANIM_W * BOOT_ANIM_H * 2)\n')
+    print('assets.bin  %.1f MB（%d 帧，烧到 0xB00000）'
+          % (os.path.getsize(bin_path) / 1048576.0, BOOT_FRAME_COUNT))
+
+
 if __name__ == '__main__':
     build_anim()
     build_assets()
+    build_boot_anim()
     print('完成。接下来编译：D:\\xiaozhi-c\\build.ps1')

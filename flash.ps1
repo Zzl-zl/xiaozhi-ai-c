@@ -7,11 +7,20 @@ $out = & $venvPy "$env:IDF_PATH\tools\idf_tools.py" export --format key-value 2>
 foreach ($line in $out) { if ($line -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { Set-Item -Path ("env:" + $matches[1]) -Value $matches[2] } }
 $env:PYTHONUTF8 = "1"
 Set-Location $PSScriptRoot
-$PORT = "COM5"
-$ports = [System.IO.Ports.SerialPort]::GetPortNames()
-if($ports.Count -gt 0 -and $ports -notcontains $PORT) { $PORT = $ports[0] }
 
-Write-Host ("=== Flashing to " + $PORT + " ===") -ForegroundColor Cyan
+$ports = [System.IO.Ports.SerialPort]::GetPortNames()
+if ($ports.Count -gt 0) { $PORT = $ports[0] } else { $PORT = "COM5" }
+
+Write-Host ("=== Flashing firmware to " + $PORT + " ===") -ForegroundColor Cyan
 & $venvPy "$env:IDF_PATH\tools\idf.py" -p $PORT flash
 Write-Host ""
 Write-Host ("FLASH EXIT CODE: " + $LASTEXITCODE) -ForegroundColor Green
+
+# 开机动画 30 帧资源 -> assets 分区（0xB00000 / 5MB）
+$assetsBin = "D:\xiaozhi-c\main\assets.bin"
+if (Test-Path -LiteralPath $assetsBin) {
+    Write-Host ""
+    Write-Host ("=== Flashing assets.bin to 0xB00000 ===") -ForegroundColor Cyan
+    & $venvPy -m esptool --chip esp32s3 -p $PORT -b 460800 write_flash 0xB00000 $assetsBin
+    Write-Host ("ASSETS EXIT CODE: " + $LASTEXITCODE) -ForegroundColor Green
+}

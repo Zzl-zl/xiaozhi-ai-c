@@ -33,6 +33,8 @@
 #include "boot_bg.h"
 #include "whale_assets.h"
 #include "whale_anim.h"
+#include "boot_anim.h"
+#include "esp_partition.h"
 
 static const char *TAG = "display";
 
@@ -223,6 +225,58 @@ static const lv_image_dsc_t *s_anim_dsc[WHALE_ANIM_FRAMES] = {
     &s_anim4_dsc, &s_anim5_dsc, &s_anim6_dsc, &s_anim7_dsc
 };
 
+
+/* ---- 开机 30 帧动画：存在 assets 分区，mmap 后直接当图像数据 ----
+ * 资源烧录位置：0xB00000（assets 分区），由 flash.ps1 自动烧写 assets.bin
+ */
+static const uint8_t *s_boot_frames = NULL;
+static esp_partition_mmap_handle_t s_boot_mmap_handle;
+static int s_boot_frame_idx = 0;
+static uint32_t s_boot_frame_ms = 0;
+
+static lv_image_dsc_t s_boot_anim_dsc = {
+    .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
+                .flags = 0, .w = BOOT_ANIM_W, .h = BOOT_ANIM_H,
+                .stride = BOOT_ANIM_W * 2, .reserved_2 = 0 },
+    .data_size = BOOT_ANIM_FRAME_BYTES,
+    .data = NULL, .reserved = NULL, .reserved_2 = NULL,
+};
+
+static esp_err_t boot_anim_init(void)
+{
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "assets");
+    if(part == NULL) {
+        ESP_LOGW(TAG, "未找到 assets 分区，开机动画退回静态图");
+        return ESP_ERR_NOT_FOUND;
+    }
+    size_t need = (size_t)BOOT_ANIM_FRAME_BYTES * BOOT_ANIM_N;
+    if(part->size < need) {
+        ESP_LOGW(TAG, "assets 分区太小：%u < %u", (unsigned)part->size, (unsigned)need);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    esp_err_t err = esp_partition_mmap(part, 0, need, ESP_PARTITION_MMAP_DATA,
+                                       (const void **)&s_boot_frames, &s_boot_mmap_handle);
+    if(err != ESP_OK) {
+        ESP_LOGW(TAG, "assets mmap 失败: %d", err);
+        return err;
+    }
+    ESP_LOGI(TAG, "开机动画已映射：%d 帧 @ %p", BOOT_ANIM_N, s_boot_frames);
+    return ESP_OK;
+}
+
+static void boot_set_frame(int idx)
+{
+    if(s_boot_frames == NULL || s_boot_sword == NULL) {
+        return;
+    }
+    if(idx < 0 || idx >= BOOT_ANIM_N) {
+        idx = 0;
+    }
+    s_boot_frame_idx = idx;
+    s_boot_anim_dsc.data = s_boot_frames + (size_t)idx * BOOT_ANIM_FRAME_BYTES;
+    lv_image_set_src(s_boot_sword, &s_boot_anim_dsc);
+}
 static const lv_image_dsc_t s_whale_icon_dsc = {
     .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565A8,
                 .flags = 0, .w = WHALE_ICON_SZ, .h = WHALE_ICON_SZ,
@@ -2233,11 +2287,18 @@ static void ui_boot_create(void)
     /* 持剑鲸鱼娘：淡入 + 轻微上浮 */
     s_boot_sword = lv_image_create(s_scr_boot);
     if(s_boot_sword != NULL) {
-        lv_image_set_src(s_boot_sword, &s_whale_boot_dsc);
+        if(s_boot_frames != NULL) {
+            boot_set_frame(0);
+        }
+        else {
+            lv_image_set_src(s_boot_sword, &s_whale_boot_dsc);
+        }
         lv_obj_set_pos(s_boot_sword, 0, 0);
         lv_obj_set_style_opa(s_boot_sword, LV_OPA_TRANSP, 0);
         lv_obj_clear_flag(s_boot_sword, LV_OBJ_FLAG_SCROLLABLE);
     }
+    s_boot_frame_idx = 0;
+    s_boot_frame_ms = 0;
 
     /* 顶部品牌字 */
     s_boot_logo = lv_label_create(s_scr_boot);
@@ -2879,6 +2940,18 @@ static void ui_anim_cb(lv_timer_t *t)
             lv_obj_set_style_opa(s_boot_sword, (lv_opa_t)opa, 0);
         }
 
+        /* 30 帧动画循环（每 150ms 一帧） */
+        if(s_boot_frames != NULL) {
+            uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+            if(s_boot_frame_ms == 0) {
+                s_boot_frame_ms = now_ms;
+            }
+            if(now_ms - s_boot_frame_ms >= 150) {
+                s_boot_frame_ms = now_ms;
+                boot_set_frame((s_boot_frame_idx + 1) % BOOT_ANIM_N);
+            }
+        }
+
         /* 0.6~2.2s 扫描线自上而下 */
         if(s_boot_scan != NULL) {
             if(bt > 600 && bt < 2200) {
@@ -3193,6 +3266,7 @@ esp_err_t display_init(void)
     }
 
     /* 四个界面 */
+    boot_anim_init();
     ui_boot_create();
     s_boot_t0 = (uint32_t)(esp_timer_get_time() / 1000);
     ui_idle_create();

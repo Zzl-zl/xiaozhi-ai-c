@@ -14,6 +14,7 @@ ui_source/
 │   ├── chatbg_240.png      聊天界面背景       240x240  RGB（已压暗模糊）
 │   └── emo_{neutral,happy,laugh,pout}_64.png  聊天表情  64x64 RGBA
 ├── frames/     主界面动画帧，必须 8 张 f00~f07.png，160x160 RGBA
+├── frames_boot/ 开机动画帧，30 张 b00~b29.png，240x240 RGB（打包成 assets.bin）
 ├── raw/        原始素材（设定集、用户提供的大图），仅供重新裁切参考
 └── preview/    效果预览图（不参与生成）
 ```
