@@ -8,6 +8,8 @@ foreach ($line in $out) { if ($line -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { 
 $env:PYTHONUTF8 = "1"
 Set-Location $PSScriptRoot
 $PORT = "COM5"
+$ports = [System.IO.Ports.SerialPort]::GetPortNames()
+if($ports.Count -gt 0 -and $ports -notcontains $PORT) { $PORT = $ports[0] }
 
 Write-Host ("=== Serial monitor " + $PORT + " @115200 (Ctrl+] to quit) ===") -ForegroundColor Cyan
 & $venvPy "$env:IDF_PATH\tools\idf.py" -p $PORT monitor

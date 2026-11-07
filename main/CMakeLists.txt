@@ -1,4 +1,4 @@
-idf_component_register(
+﻿idf_component_register(
     SRCS
         "app_main.c"
         "mic.c"
@@ -13,6 +13,9 @@ idf_component_register(
         "mcp_tools.c"
         "wake_word.c"
         "xiaozhi_app.c"
+        "boot_bg.c"
+        "whale_assets.c"
+        "whale_anim.c"
         "font_gb2312_16.c"
     INCLUDE_DIRS "."
     REQUIRES

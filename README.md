@@ -36,6 +36,23 @@
 
 首次使用前：复制 `main/wifi_config.example.h` 为 `main/wifi_config.h` 并填入 Wi-Fi。
 
+## UI 素材（鲸鱼娘主题）
+
+素材源和生成脚本都在仓库里，改完 PNG 跑一条命令即可重新打包：
+
+`
+ui_source/
+├── assets/     静态素材：主界面角色 160x160、鲸鱼图标 64x64、
+│               开机持剑图 240x240、聊天背景、4 个表情 64x64
+├── frames/     主界面 8 帧动画 f00~f07.png（160x160）
+├── raw/        原始素材（角色设定集等大图，供重新裁切）
+└── preview/    效果预览（GIF / 布局图）
+tools/build_ui.py   改完素材后运行，自动重新生成 main/whale_anim.c 与 whale_assets.c
+`
+
+修改流程：编辑 ui_source/ 里的 PNG → python tools/build_ui.py → 编译烧录。
+尺寸要求见 [ui_source/README.md](ui_source/README.md)。
+
 ## 已知问题（进行中）
 - 音乐播放中唤醒偶发卡死（暂停/停止状态机死锁，排查中）
 - 空闲界面约 20~30fps，可继续优化渲染

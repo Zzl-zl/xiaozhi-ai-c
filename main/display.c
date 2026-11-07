@@ -30,6 +30,9 @@
 #include "board_config.h"
 #include "display.h"
 #include "weather.h"
+#include "boot_bg.h"
+#include "whale_assets.h"
+#include "whale_anim.h"
 
 static const char *TAG = "display";
 
@@ -167,7 +170,6 @@ static const int16_t s_planet_band_amp[6] = {18, 22, 15, 12, 20, 16};
 /* 关机动画 */
 /* 关机动画 */
 static lv_obj_t *s_scr_off = NULL;
-static lv_obj_t *s_off_ring = NULL;
 static volatile bool s_shutdown_req = false;
 
 /* 聊天界面控件 */
@@ -180,8 +182,133 @@ static lv_obj_t *s_wifi_bars_chat[4] = {NULL};
 
 /* 开机界面控？*/
 static lv_obj_t *s_boot_logo = NULL;
-static lv_obj_t *s_boot_glow = NULL;
+
+/* ======================= 鲸鱼娘 UI ======================= */
+static lv_obj_t *s_whale = NULL;
+static lv_obj_t *s_boot_sword = NULL;
+static lv_obj_t *s_chat_bg = NULL;
+static lv_obj_t *s_chat_avatar = NULL;
+static lv_obj_t *s_chat_name = NULL;
+static int s_whale_last_emo = -1;
+static uint32_t s_boot_anim_t0 = 0;
+static int s_boot_opa = -1;
+
+/* ---- 图像描述符 ---- */
+
+/* ---- 鲸鱼娘帧动画 ---- */
+static lv_obj_t *s_whale_icon = NULL;
+static int s_anim_idx = 0;
+static uint32_t s_anim_last_ms = 0;
+
+#define ANIM_DSC(n) \
+    static const lv_image_dsc_t s_anim##n##_dsc = { \
+        .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565A8, \
+                    .flags = 0, .w = WHALE_ANIM_SZ, .h = WHALE_ANIM_SZ, \
+                    .stride = WHALE_ANIM_SZ * 2, .reserved_2 = 0 }, \
+        .data_size = WHALE_ANIM_SZ * WHALE_ANIM_SZ * 3, \
+        .data = whale_frame_##n, .reserved = NULL, .reserved_2 = NULL, \
+    };
+ANIM_DSC(0)
+ANIM_DSC(1)
+ANIM_DSC(2)
+ANIM_DSC(3)
+ANIM_DSC(4)
+ANIM_DSC(5)
+ANIM_DSC(6)
+ANIM_DSC(7)
+#undef ANIM_DSC
+
+static const lv_image_dsc_t *s_anim_dsc[WHALE_ANIM_FRAMES] = {
+    &s_anim0_dsc, &s_anim1_dsc, &s_anim2_dsc, &s_anim3_dsc,
+    &s_anim4_dsc, &s_anim5_dsc, &s_anim6_dsc, &s_anim7_dsc
+};
+
+static const lv_image_dsc_t s_whale_icon_dsc = {
+    .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565A8,
+                .flags = 0, .w = WHALE_ICON_SZ, .h = WHALE_ICON_SZ,
+                .stride = WHALE_ICON_SZ * 2, .reserved_2 = 0 },
+    .data_size = WHALE_ICON_SZ * WHALE_ICON_SZ * 3,
+    .data = whale_icon_data, .reserved = NULL, .reserved_2 = NULL,
+};
+
+#define EMO_DSC(name) \
+    static const lv_image_dsc_t s_emo_##name##_dsc = { \
+        .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565A8, \
+                    .flags = 0, .w = WHALE_EMO_W, .h = WHALE_EMO_H, \
+                    .stride = WHALE_EMO_W * 2, .reserved_2 = 0 }, \
+        .data_size = WHALE_EMO_W * WHALE_EMO_H * 3, \
+        .data = whale_emo_##name##_data, .reserved = NULL, .reserved_2 = NULL, \
+    };
+EMO_DSC(neutral)
+EMO_DSC(happy)
+EMO_DSC(laugh)
+EMO_DSC(pout)
+#undef EMO_DSC
+
+static const lv_image_dsc_t *s_emo_dsc[4] = {
+    &s_emo_neutral_dsc, &s_emo_happy_dsc, &s_emo_laugh_dsc, &s_emo_pout_dsc
+};
+
+static const lv_image_dsc_t s_whale_chatbg_dsc = {
+    .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
+                .flags = 0, .w = WHALE_BG_W, .h = WHALE_BG_H,
+                .stride = WHALE_BG_W * 2, .reserved_2 = 0 },
+    .data_size = WHALE_BG_W * WHALE_BG_H * 2,
+    .data = whale_chatbg_data, .reserved = NULL, .reserved_2 = NULL,
+};
+
+static const lv_image_dsc_t s_whale_boot_dsc = {
+    .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
+                .flags = 0, .w = WHALE_BG_W, .h = WHALE_BG_H,
+                .stride = WHALE_BG_W * 2, .reserved_2 = 0 },
+    .data_size = WHALE_BG_W * WHALE_BG_H * 2,
+    .data = whale_boot_data, .reserved = NULL, .reserved_2 = NULL,
+};
 static lv_obj_t *s_boot_scan = NULL;
+
+/* ======================= 开机 / 关机动画：全景背景 + 睁眼 ======================= */
+#define BOOT_EYE_W       240
+#define BOOT_EYE_H       150
+#define BOOT_EYE_Y       56
+#define BOOT_EYE_CX_L    79
+#define BOOT_EYE_CX_R    161
+#define BOOT_EYE_CY      74
+#define BOOT_EYE_RX      35
+#define BOOT_EYE_RY      25
+#define BOOT_TOTAL_MS    5200     /* 开机动画总时长 */
+#define OFF_TOTAL_MS     1700     /* 关机动画总时长 */
+
+static lv_obj_t *s_boot_bg = NULL;
+static lv_obj_t *s_boot_eye = NULL;
+static uint8_t  *s_boot_eye_buf = NULL;
+static lv_obj_t *s_off_bg = NULL;
+static lv_obj_t *s_off_eye = NULL;
+static uint8_t  *s_off_eye_buf = NULL;
+static uint32_t s_boot_t0 = 0;
+static uint32_t s_off_t0 = 0;
+static lv_obj_t *s_boot_sub = NULL;
+static lv_obj_t *s_off_sub = NULL;
+static int s_boot_bg_opa = -1;
+static int s_boot_logo_opa = -1;
+static int s_boot_sub_opa = -1;
+static int s_off_bg_opa = -1;
+
+/* 240x240 RGB565 全景背景（数据在 flash rodata，不占 RAM） */
+static const lv_image_dsc_t s_boot_bg_dsc = {
+    .header = {
+        .magic      = LV_IMAGE_HEADER_MAGIC,
+        .cf         = LV_COLOR_FORMAT_RGB565,
+        .flags      = 0,
+        .w          = BOOT_BG_W,
+        .h          = BOOT_BG_H,
+        .stride     = BOOT_BG_W * 2,
+        .reserved_2 = 0,
+    },
+    .data_size  = BOOT_BG_W * BOOT_BG_H * 2,
+    .data       = (const uint8_t *)boot_bg_240x240,
+    .reserved   = NULL,
+    .reserved_2 = NULL,
+};
 
 /* 状？*/
 static volatile display_state_t s_state = DISPLAY_STATE_IDLE;
@@ -1744,36 +1871,398 @@ static void face_draw(void)
     lv_obj_invalidate(s_face_canvas);
 }
 
-/* ======================= 1. 开机界？======================= */
+/* ======================= 1. 开机界面（全景背景 + 睁眼动画） ======================= */
+
+/* ---------------- 睁眼动画绘制原语（ARGB8888 透明画布） ---------------- */
+
+static inline uint32_t bcv_argb(int a, uint32_t rgb)
+{
+    return ((uint32_t)a << 24) | (rgb & 0x00FFFFFFu);
+}
+
+/* 快速整数平方根 */
+static uint32_t bcv_isqrt(uint32_t v)
+{
+    uint32_t r = 0;
+    uint32_t b = 1u << 30;
+    while(b > v) {
+        b >>= 2;
+    }
+    while(b != 0) {
+        if(v >= r + b) {
+            v -= r + b;
+            r = (r >> 1) + b;
+        }
+        else {
+            r >>= 1;
+        }
+        b >>= 2;
+    }
+    return r;
+}
+
+/* 透明画布写像素（source-over 混合） */
+static inline void bcv_px(uint8_t *buf, int x, int y, uint32_t argb)
+{
+    if(x < 0 || x >= BOOT_EYE_W || y < 0 || y >= BOOT_EYE_H) {
+        return;
+    }
+    int sa = (int)(argb >> 24);
+    if(sa <= 0) {
+        return;
+    }
+    uint32_t *p = (uint32_t *)buf + (size_t)y * BOOT_EYE_W + x;
+    uint32_t d = *p;
+    if(sa >= 255) {
+        *p = argb;
+        return;
+    }
+    int da = (int)(d >> 24);
+    if(da <= 0) {
+        *p = argb;
+        return;
+    }
+    int ia = 255 - sa;
+    int oa = sa + da * ia / 255;
+    int sr = (int)((argb >> 16) & 0xFF);
+    int sg = (int)((argb >> 8) & 0xFF);
+    int sb = (int)(argb & 0xFF);
+    int dr = (int)((d >> 16) & 0xFF);
+    int dg = (int)((d >> 8) & 0xFF);
+    int db = (int)(d & 0xFF);
+    int orr = (sr * sa + dr * da * ia / 255) / oa;
+    int og = (sg * sa + dg * da * ia / 255) / oa;
+    int ob = (sb * sa + db * da * ia / 255) / oa;
+    *p = ((uint32_t)oa << 24) | ((uint32_t)orr << 16) | ((uint32_t)og << 8) | (uint32_t)ob;
+}
+
+/* 实心椭圆 */
+static void bcv_ellipse_fill(uint8_t *buf, int cx, int cy, int rx, int ry, uint32_t argb)
+{
+    if(rx <= 0 || ry <= 0) {
+        return;
+    }
+    int64_t ry2 = (int64_t)ry * ry;
+    for(int dy = -ry; dy <= ry; dy++) {
+        int64_t q = (ry2 - (int64_t)dy * dy) * 1000000 / ry2;
+        int w = (int)((int64_t)rx * (int64_t)bcv_isqrt((uint32_t)q) / 1000);
+        for(int x = cx - w; x <= cx + w; x++) {
+            bcv_px(buf, x, cy + dy, argb);
+        }
+    }
+}
+
+/* 椭圆环 */
+static void bcv_ellipse_ring(uint8_t *buf, int cx, int cy, int rx, int ry, int th, uint32_t argb)
+{
+    if(rx <= 0 || ry <= 0) {
+        return;
+    }
+    if(th < 1) {
+        th = 1;
+    }
+    int rx2 = rx - th;
+    int ry2 = ry - th;
+    int64_t ry2sq = (int64_t)ry * ry;
+    int64_t ryisq = (ry2 > 0) ? (int64_t)ry2 * ry2 : 0;
+    for(int dy = -ry; dy <= ry; dy++) {
+        int64_t q = (ry2sq - (int64_t)dy * dy) * 1000000 / ry2sq;
+        int wo = (int)((int64_t)rx * (int64_t)bcv_isqrt((uint32_t)q) / 1000);
+        int wi = -1;
+        if(ryisq > 0 && dy >= -ry2 && dy <= ry2) {
+            int64_t qi = (ryisq - (int64_t)dy * dy) * 1000000 / ryisq;
+            wi = (int)((int64_t)rx2 * (int64_t)bcv_isqrt((uint32_t)qi) / 1000);
+        }
+        int y = cy + dy;
+        for(int x = cx - wo; x <= cx + wo; x++) {
+            int dx = x - cx;
+            if(wi >= 0 && dx >= -wi && dx <= wi) {
+                continue;
+            }
+            bcv_px(buf, x, y, argb);
+        }
+    }
+}
+
+/* 椭圆径向光晕（单次遍历，按距离衰减） */
+static void bcv_glow(uint8_t *buf, int cx, int cy, int rx, int ry, int a_max, uint32_t rgb)
+{
+    if(rx <= 0 || ry <= 0 || a_max <= 0) {
+        return;
+    }
+    int64_t rx2 = (int64_t)rx * rx;
+    int64_t ry2 = (int64_t)ry * ry;
+    for(int dy = -ry; dy <= ry; dy++) {
+        int64_t ddy = (int64_t)dy * dy * 1000 / ry2;
+        if(ddy >= 1000) {
+            continue;
+        }
+        int y = cy + dy;
+        for(int dx = -rx; dx <= rx; dx++) {
+            int64_t d2 = ddy + (int64_t)dx * dx * 1000 / rx2;
+            if(d2 >= 1000) {
+                continue;
+            }
+            int a = (int)((int64_t)a_max * (1000 - d2) / 1000);
+            if(a > 0) {
+                bcv_px(buf, cx + dx, y, bcv_argb(a, rgb));
+            }
+        }
+    }
+}
+
+/* 画一只眼睛；open: 0=闭合，1000=全开 */
+static void bcv_eye(uint8_t *buf, int cx, int cy, int open, uint32_t color)
+{
+    if(open < 0) {
+        open = 0;
+    }
+    if(open > 1000) {
+        open = 1000;
+    }
+    const int rx = BOOT_EYE_RX;
+    const int ry = BOOT_EYE_RY;
+    int ry_open = ry * open / 1000;
+    if(ry_open < 1) {
+        ry_open = 1;
+    }
+    uint32_t bright = fc_lighten(color, 60);
+
+    /* 外发光：睁得越开越大越亮 */
+    bcv_glow(buf, cx, cy, rx + 30, ry_open + 26, 26 + open * 46 / 1000, color);
+
+    if(open < 90) {
+        /* 闭合：中间亮、两头淡的发光缝 */
+        for(int x = -rx; x <= rx; x++) {
+            int ax = (x < 0) ? -x : x;
+            int k = (rx - ax) * 100 / rx;
+            int a = 110 + k * 130 / 100;
+            bcv_px(buf, cx + x, cy, bcv_argb(a, bright));
+            if(k > 50) {
+                bcv_px(buf, cx + x, cy - 1, bcv_argb(a / 4, bright));
+                bcv_px(buf, cx + x, cy + 1, bcv_argb(a / 4, bright));
+            }
+        }
+        return;
+    }
+
+    /* 眼眶 + 眼底 */
+    bcv_ellipse_ring(buf, cx, cy, rx, ry_open, 2, bcv_argb(205, color));
+    bcv_ellipse_fill(buf, cx, cy, rx - 2, ry_open - 1, bcv_argb(215, 0x04121A));
+
+    /* 虹膜（睁到一定程度才出现） */
+    if(open > 240) {
+        int ir = (ry - 3) * open / 1000;
+        if(ir > ry_open - 2) {
+            ir = ry_open - 2;
+        }
+        if(ir > 0) {
+            bcv_ellipse_fill(buf, cx, cy, ir, ir, bcv_argb(235, 0x072A34));
+            bcv_ellipse_ring(buf, cx, cy, ir, ir, 1, bcv_argb(255, 0x2BE8FF));
+            int ir2 = ir * 62 / 100;
+            if(ir2 > 0) {
+                bcv_ellipse_fill(buf, cx, cy, ir2, ir2, bcv_argb(200, 0x0B6C84));
+            }
+            int ir3 = ir * 33 / 100;
+            if(ir3 > 0) {
+                bcv_ellipse_fill(buf, cx, cy, ir3, ir3, bcv_argb(255, 0x000A0C));
+            }
+            int hr = ir / 5;
+            if(hr > 0) {
+                bcv_ellipse_fill(buf, cx - ir / 3, cy - ir / 3, hr, hr, bcv_argb(190, 0xFFFFFF));
+            }
+        }
+    }
+}
+
+/* 眼睛区域内横向扫描亮线 */
+static void bcv_scanline(uint8_t *buf, int y, int a, uint32_t rgb)
+{
+    if(y < 0 || y >= BOOT_EYE_H || a <= 0) {
+        return;
+    }
+    for(int x = 0; x < BOOT_EYE_W; x++) {
+        int dx = x - BOOT_EYE_W / 2;
+        int adx = (dx < 0) ? -dx : dx;
+        int aa = a * (BOOT_EYE_W / 2 - adx) / (BOOT_EYE_W / 2);
+        if(aa > 0) {
+            bcv_px(buf, x, y, bcv_argb(aa, rgb));
+        }
+    }
+}
+
+/* 渲染一帧睁眼/闭眼画面到画布 */
+static void boot_render(uint32_t t, uint8_t *buf, lv_obj_t *canvas, bool off)
+{
+    if(buf == NULL || canvas == NULL) {
+        return;
+    }
+    memset(buf, 0, (size_t)BOOT_EYE_W * BOOT_EYE_H * 4);
+
+    int open;
+    uint32_t tint;
+
+    if(!off) {
+        tint = COLOR_NEON_CYAN;
+        open = 0;
+        if(t > 700) {
+            uint32_t k = t - 700;
+            if(k > 1650) {
+                k = 1650;
+            }
+            int f = (int)(k * 1000 / 1650);
+            open = 1000 - (1000 - f) * (1000 - f) / 1000;   /* 先快后慢 */
+        }
+    }
+    else {
+        tint = COLOR_NEON_PINK;
+        if(t < 520) {
+            open = 1000 - (int)(t * 1000 / 520);
+        }
+        else {
+            open = 0;
+        }
+    }
+
+    bcv_eye(buf, BOOT_EYE_CX_L, BOOT_EYE_CY, open, tint);
+    bcv_eye(buf, BOOT_EYE_CX_R, BOOT_EYE_CY, open, tint);
+
+    if(!off) {
+        /* 扫描线自上而下扫过眼睛区域 */
+        if(t >= 500 && t <= 1500) {
+            int sy = (int)((t - 500) * BOOT_EYE_H / 1000);
+            bcv_scanline(buf, sy, 90, 0xEAFBFF);
+        }
+        /* 睁眼完成后：一圈扩散环 */
+        if(t > 2300 && t < 3100) {
+            uint32_t k = t - 2300;
+            int rr = 10 + (int)(k * 46 / 800);
+            bcv_ellipse_ring(buf, BOOT_EYE_CX_L, BOOT_EYE_CY, rr, rr, 1, bcv_argb(120, 0x8AF4FF));
+            bcv_ellipse_ring(buf, BOOT_EYE_CX_R, BOOT_EYE_CY, rr, rr, 1, bcv_argb(120, 0x8AF4FF));
+        }
+    }
+
+    lv_obj_invalidate(canvas);
+}
+
+/* 开机动画时间轴（LVGL 任务每帧调用） */
+static void boot_anim_step(uint32_t t)
+{
+    /* 背景淡入 */
+    int opa;
+    if(t < 140) {
+        opa = 0;
+    }
+    else if(t < 820) {
+        opa = (int)((t - 140) * 255 / 680);
+    }
+    else {
+        opa = 255;
+    }
+    if(s_boot_bg != NULL && opa != s_boot_bg_opa) {
+        s_boot_bg_opa = opa;
+        lv_obj_set_style_opa(s_boot_bg, (lv_opa_t)opa, 0);
+    }
+
+    /* 全屏扫描线 */
+    if(s_boot_scan != NULL) {
+        if(t >= 420 && t <= 1500) {
+            int y = (int)((t - 420) * (LCD_W + 14) / 1080) - 7;
+            lv_obj_set_y(s_boot_scan, y);
+            lv_obj_set_style_bg_opa(s_boot_scan, LV_OPA_60, 0);
+        }
+        else {
+            lv_obj_set_style_bg_opa(s_boot_scan, LV_OPA_TRANSP, 0);
+        }
+    }
+
+    /* 眼睛 */
+    boot_render(t, s_boot_eye_buf, s_boot_eye, false);
+
+    /* 顶部标题淡入 */
+    if(s_boot_logo != NULL) {
+        int a = 0;
+        if(t > 2600) {
+            a = (int)((t - 2600) * 255 / 700);
+            if(a > 255) {
+                a = 255;
+            }
+        }
+        if(a != s_boot_logo_opa) {
+            s_boot_logo_opa = a;
+            lv_obj_set_style_text_opa(s_boot_logo, (lv_opa_t)a, 0);
+        }
+    }
+    /* 底部副标题淡入 */
+    if(s_boot_sub != NULL) {
+        int a = 0;
+        if(t > 2850) {
+            a = (int)((t - 2850) * 255 / 600);
+            if(a > 255) {
+                a = 255;
+            }
+        }
+        if(a != s_boot_sub_opa) {
+            s_boot_sub_opa = a;
+            lv_obj_set_style_text_opa(s_boot_sub, (lv_opa_t)a, 0);
+        }
+    }
+}
+
+/* 关机动画时间轴 */
+static void off_anim_step(uint32_t t)
+{
+    int opa = 255;
+    if(t > 480) {
+        opa = 255 - (int)((t - 480) * 255 / 900);
+        if(opa < 0) {
+            opa = 0;
+        }
+    }
+    if(s_off_bg != NULL && opa != s_off_bg_opa) {
+        s_off_bg_opa = opa;
+        lv_obj_set_style_opa(s_off_bg, (lv_opa_t)opa, 0);
+    }
+    boot_render(t, s_off_eye_buf, s_off_eye, true);
+}
 
 static void ui_boot_create(void)
 {
     s_scr_boot = mk_screen();
-    /* 星系背景已去掉（纯黑背景，省 PSRAM/渲染；后期用切图主题恢复） */
 
-    /* 光晕 */
-    s_boot_glow = mk_round(s_scr_boot, 40, 40, 160, 160, COLOR_NEON_PURPLE, LV_RADIUS_CIRCLE);
-    lv_obj_set_style_bg_opa(s_boot_glow, LV_OPA_20, 0);
+    /* 持剑鲸鱼娘：淡入 + 轻微上浮 */
+    s_boot_sword = lv_image_create(s_scr_boot);
+    if(s_boot_sword != NULL) {
+        lv_image_set_src(s_boot_sword, &s_whale_boot_dsc);
+        lv_obj_set_pos(s_boot_sword, 0, 0);
+        lv_obj_set_style_opa(s_boot_sword, LV_OPA_TRANSP, 0);
+        lv_obj_clear_flag(s_boot_sword, LV_OBJ_FLAG_SCROLLABLE);
+    }
 
-    /* Logo 文字（霓虹） */
+    /* 顶部品牌字 */
     s_boot_logo = lv_label_create(s_scr_boot);
     lv_label_set_text(s_boot_logo, "XIAOZHI");
-    lv_obj_set_style_text_font(s_boot_logo, &lv_font_montserrat_24, 0);
-    lv_obj_set_style_text_color(s_boot_logo, lv_color_hex(COLOR_NEON_CYAN), 0);
-    lv_obj_set_style_text_letter_space(s_boot_logo, 2, 0);
-    lv_obj_center(s_boot_logo);
-    lv_obj_set_y(s_boot_logo, -10);
+    lv_obj_set_style_text_font(s_boot_logo, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_boot_logo, lv_color_hex(0xBFEFFF), 0);
+    lv_obj_set_style_text_letter_space(s_boot_logo, 4, 0);
+    lv_obj_set_style_text_opa(s_boot_logo, LV_OPA_TRANSP, 0);
+    lv_obj_align(s_boot_logo, LV_ALIGN_TOP_MID, 0, 8);
 
-    /* 副标？*/
-    lv_obj_t *sub = lv_label_create(s_scr_boot);
-    lv_label_set_text(sub, "C EDITION");
-    lv_obj_set_style_text_font(sub, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(sub, lv_color_hex(COLOR_NEON_PINK), 0);
-    lv_obj_align(sub, LV_ALIGN_CENTER, 0, 28);
+    /* 底部小字 */
+    s_boot_sub = lv_label_create(s_scr_boot);
+    lv_label_set_text(s_boot_sub, "WAKING UP");
+    lv_obj_set_style_text_font(s_boot_sub, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_boot_sub, lv_color_hex(0x7FD8FF), 0);
+    lv_obj_set_style_text_letter_space(s_boot_sub, 3, 0);
+    lv_obj_set_style_text_opa(s_boot_sub, LV_OPA_TRANSP, 0);
+    lv_obj_align(s_boot_sub, LV_ALIGN_BOTTOM_MID, 0, -8);
 
-    /* 扫描？*/
-    s_boot_scan = mk_round(s_scr_boot, 0, 0, LCD_W, 3, COLOR_NEON_CYAN, 0);
-    lv_obj_set_style_bg_opa(s_boot_scan, LV_OPA_60, 0);
+    /* 扫描线 */
+    s_boot_scan = mk_round(s_scr_boot, 0, 0, LCD_W, 2, 0xBFF4FF, 0);
+    lv_obj_set_style_bg_opa(s_boot_scan, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_shadow_width(s_boot_scan, 14, 0);
+    lv_obj_set_style_shadow_color(s_boot_scan, lv_color_hex(0x4D6BFE), 0);
+    lv_obj_set_style_shadow_opa(s_boot_scan, LV_OPA_50, 0);
 }
 
 /* ======================= 2. 待机界面 ======================= */
@@ -1781,49 +2270,62 @@ static void ui_boot_create(void)
 static void ui_idle_create(void)
 {
     s_scr_idle = mk_screen();
-    /* 星系背景已去掉（纯黑背景，省 PSRAM/渲染；后期用切图主题恢复） */
 
+    /* DeepSeek 鲸鱼小图标（半透明水印，角色后面） */
+    s_whale_icon = lv_image_create(s_scr_idle);
+    if(s_whale_icon != NULL) {
+        lv_image_set_src(s_whale_icon, &s_whale_icon_dsc);
+        lv_obj_set_pos(s_whale_icon, 88, 24);
+        lv_obj_set_style_opa(s_whale_icon, LV_OPA_20, 0);
+        lv_obj_clear_flag(s_whale_icon, LV_OBJ_FLAG_SCROLLABLE);
+    }
 
-    /* 全息机器人脸（ARGB 画布逐帧手绘？*/
-    face_canvas_create(s_scr_idle);
+    /* 鲸鱼娘 160x160 帧动画（黑底，居中偏下） */
+    s_whale = lv_image_create(s_scr_idle);
+    if(s_whale != NULL) {
+        lv_image_set_src(s_whale, s_anim_dsc[0]);
+        lv_obj_set_pos(s_whale, 40, 44);
+        lv_obj_clear_flag(s_whale, LV_OBJ_FLAG_SCROLLABLE);
+    }
+    s_anim_idx = 0;
+    s_anim_last_ms = (uint32_t)(esp_timer_get_time() / 1000);
 
-    /* ---- 时间 / 日期（左上角？---- */
+    /* 时间 / 日期 */
     s_idle_time = lv_label_create(s_scr_idle);
     lv_label_set_text(s_idle_time, "--:--");
     lv_obj_set_style_text_font(s_idle_time, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(s_idle_time, lv_color_hex(COLOR_NEON_CYAN), 0);
-    lv_obj_set_pos(s_idle_time, 14, 6);
+    lv_obj_set_pos(s_idle_time, 10, 1);
 
     s_idle_date = lv_label_create(s_scr_idle);
     lv_label_set_text(s_idle_date, "时间未同步");
     lv_obj_set_style_text_font(s_idle_date, &font_gb2312_16, 0);
-    lv_obj_set_style_text_color(s_idle_date, lv_color_hex(0x7FB2C8), 0);
-    lv_obj_set_pos(s_idle_date, 14, 34);
+    lv_obj_set_style_text_color(s_idle_date, lv_color_hex(0x9FD6EA), 0);
+    lv_obj_set_pos(s_idle_date, 10, 28);
 
-    /* ---- 天气行：图标 + 温度 + 城市/天气（flex 行，整体自动居中？---- */
+    /* 天气：右上角 */
     s_wx_row = lv_obj_create(s_scr_idle);
-    lv_obj_set_size(s_wx_row, LCD_W, 32);
-    lv_obj_set_pos(s_wx_row, 0, 132);
+    lv_obj_set_size(s_wx_row, 96, 40);
+    lv_obj_set_pos(s_wx_row, 140, 2);
     lv_obj_set_style_bg_opa(s_wx_row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_wx_row, 0, 0);
     lv_obj_set_style_pad_all(s_wx_row, 0, 0);
-    lv_obj_set_style_pad_column(s_wx_row, 6, 0);
+    lv_obj_set_style_pad_column(s_wx_row, 4, 0);
     lv_obj_clear_flag(s_wx_row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(s_wx_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(s_wx_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(s_wx_row, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    /* 天气图标容器（图元相对容器定位） */
     s_wx_icon_box = lv_obj_create(s_wx_row);
-    lv_obj_set_size(s_wx_icon_box, 28, 28);
+    lv_obj_set_size(s_wx_icon_box, 24, 24);
     lv_obj_set_style_bg_opa(s_wx_icon_box, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_wx_icon_box, 0, 0);
     lv_obj_set_style_pad_all(s_wx_icon_box, 0, 0);
     lv_obj_clear_flag(s_wx_icon_box, LV_OBJ_FLAG_SCROLLABLE);
 
     for(int i = 0; i < 3; i++) {
-        s_wx_round[i] = mk_round(s_wx_icon_box, WX_ICON_X, WX_ICON_Y, 10, 10, 0xFFD54A, LV_RADIUS_CIRCLE);
+        s_wx_round[i] = mk_round(s_wx_icon_box, WX_ICON_X, WX_ICON_Y, 9, 9, 0xFFD54A, LV_RADIUS_CIRCLE);
         set_visible(s_wx_round[i], false);
-        s_wx_bar[i] = mk_round(s_wx_icon_box, WX_ICON_X, WX_ICON_Y, 10, 4, 0xC8D8F0, 2);
+        s_wx_bar[i] = mk_round(s_wx_icon_box, WX_ICON_X, WX_ICON_Y, 9, 4, 0xC8D8F0, 2);
         set_visible(s_wx_bar[i], false);
     }
     s_wx_bolt = lv_line_create(s_wx_icon_box);
@@ -1831,78 +2333,22 @@ static void ui_idle_create(void)
     lv_obj_set_style_line_width(s_wx_bolt, 2, 0);
     lv_obj_set_style_line_color(s_wx_bolt, lv_color_hex(0xFFD54A), 0);
     lv_obj_set_style_line_rounded(s_wx_bolt, true, 0);
-    lv_obj_set_pos(s_wx_bolt, 0, 0);
     set_visible(s_wx_bolt, false);
 
-    /* 温度（montserrat 字体自带 ° 符号？*/
     s_wx_temp_lbl = lv_label_create(s_wx_row);
     lv_label_set_text(s_wx_temp_lbl, "");
     lv_obj_set_style_text_font(s_wx_temp_lbl, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(s_wx_temp_lbl, lv_color_hex(0xFFD54A), 0);
 
-    /* 城市 + 天气现象（中文） */
-    s_wx_cond = lv_label_create(s_wx_row);
+    /* 天气现象（底部） */
+    s_wx_cond = lv_label_create(s_scr_idle);
     lv_label_set_text(s_wx_cond, "");
     lv_obj_set_style_text_font(s_wx_cond, &font_gb2312_16, 0);
-    lv_obj_set_style_text_color(s_wx_cond, lv_color_hex(0xB8F4FF), 0);
+    lv_obj_set_style_text_color(s_wx_cond, lv_color_hex(0x7FD8FF), 0);
+    lv_obj_align(s_wx_cond, LV_ALIGN_BOTTOM_LEFT, 12, -8);
 
-    /* 底部提示已去掉（用户要求？*/
-
-    /* 圆形光环/脉冲圈已换成全息脸画布里？2.5D 轨道 */
-
-    /* HUD 四角？*/
-    for(int i = 0; i < 4; i++) {
-        int x = (i % 2) ? 218 : 4;
-        int y = (i / 2) ? 234 : 4;
-        lv_obj_t *c1 = mk_round(s_scr_idle, x, y, 18, 2, COLOR_NEON_CYAN, 0);
-        lv_obj_t *c2 = mk_round(s_scr_idle, x, y, 2, 18, COLOR_NEON_CYAN, 0);
-        if(i % 2) {
-            lv_obj_set_x(c1, 218);
-            lv_obj_set_x(c2, 234);
-        }
-        if(i / 2) {
-            lv_obj_set_y(c1, 234);
-            lv_obj_set_y(c2, 218);
-        }
-        lv_obj_set_style_bg_opa(c1, LV_OPA_60, 0);
-        lv_obj_set_style_bg_opa(c2, LV_OPA_60, 0);
-    }
-
-    /* 漂浮粒子 */
-    for(int i = 0; i < 8; i++) {
-        s_particle_x[i] = 10 + (i * 29) % 220;
-        s_particle_y[i] = (i * 37) % LCD_H;
-        s_idle_particles[i] = mk_round(s_scr_idle, s_particle_x[i], s_particle_y[i], 3, 3,
-                                       (i % 2) ? COLOR_NEON_CYAN : COLOR_NEON_PINK, LV_RADIUS_CIRCLE);
-        lv_obj_set_style_bg_opa(s_idle_particles[i], LV_OPA_60, 0);
-    }
-
-    /* ===== 2.5D 旋转魔方（替换原来的透视网格地面？===== */
-    cube_create(s_scr_idle);
-
-    /* 星系背景的闪烁星？+ 流星 */
-    for(int i = 0; i < GALAXY_TWINKLE; i++) {
-        int tx = 12 + (i * 53) % 210;
-        int ty = 14 + (i * 71) % 122;
-        uint32_t tc = (i % 3 == 0) ? 0xFFFFFF : ((i % 3 == 1) ? 0x9FE8FF : 0xFFC8F0);
-        s_twinkle[i] = mk_round(s_scr_idle, tx, ty, 3, 3, tc, LV_RADIUS_CIRCLE);
-        lv_obj_set_style_bg_opa(s_twinkle[i], LV_OPA_80, 0);
-        lv_obj_set_style_shadow_width(s_twinkle[i], 6, 0);
-        lv_obj_set_style_shadow_color(s_twinkle[i], lv_color_hex(0xBFF0FF), 0);
-        lv_obj_set_style_shadow_opa(s_twinkle[i], LV_OPA_40, 0);
-    }
-    s_shoot = lv_line_create(s_scr_idle);
-    lv_line_set_points_mutable(s_shoot, s_shoot_pts, 2);
-    lv_obj_set_pos(s_shoot, 0, 0);
-    line_style(s_shoot, 0xDFF6FF, 2);
-    lv_obj_set_style_line_opa(s_shoot, LV_OPA_TRANSP, 0);
-
-    /* 扫描？*/
-    s_idle_scan = mk_round(s_scr_idle, 0, 0, LCD_W, 2, COLOR_NEON_CYAN, 0);
-    lv_obj_set_style_bg_opa(s_idle_scan, LV_OPA_40, 0);
-
-    /* WiFi 信号格：最后创？= 最上层，不会被光环/扫描线挡？*/
-    mk_wifi(s_scr_idle, 198, 34, s_wifi_bars_idle);
+    /* WiFi 信号格 */
+    mk_wifi(s_scr_idle, 206, 44, s_wifi_bars_idle);
     ui_update_wifi();
 }
 
@@ -1911,66 +2357,52 @@ static void ui_idle_create(void)
 static void ui_chat_create(void)
 {
     s_scr_chat = mk_screen();
-    /* 星系背景已去掉（纯黑背景，省 PSRAM/渲染；后期用切图主题恢复） */
 
-    /* 顶部：小头像 + 状？+ WiFi */
-    mk_face(s_scr_chat, 30, 26, 8, &s_chat_eye_l, &s_chat_eye_r, &s_chat_mouth);
-
-    s_chat_status = lv_label_create(s_scr_chat);
-    lv_label_set_text(s_chat_status, "待机");
-    lv_obj_set_style_text_font(s_chat_status, &font_gb2312_16, 0);
-    lv_obj_set_style_text_color(s_chat_status, lv_color_hex(COLOR_NEON_CYAN), 0);
-    lv_obj_set_pos(s_chat_status, 62, 16);
-
-    mk_wifi(s_scr_chat, 198, 34, s_wifi_bars_chat);
-
-    /* ---- 小头像的表情附加图元 ---- */
-    s_chat_caret[0] = lv_line_create(s_scr_chat);
-    lv_line_set_points(s_chat_caret[0], s_pt_chat_caret_l, 3);
-    lv_obj_set_pos(s_chat_caret[0], 0, 0);
-    line_style(s_chat_caret[0], COLOR_NEON_CYAN, 2);
-    set_visible(s_chat_caret[0], false);
-
-    s_chat_caret[1] = lv_line_create(s_scr_chat);
-    lv_line_set_points(s_chat_caret[1], s_pt_chat_caret_r, 3);
-    lv_obj_set_pos(s_chat_caret[1], 0, 0);
-    line_style(s_chat_caret[1], COLOR_NEON_CYAN, 2);
-    set_visible(s_chat_caret[1], false);
-
-    s_chat_smile = lv_line_create(s_scr_chat);
-    lv_line_set_points(s_chat_smile, s_pt_chat_smile, 3);
-    lv_obj_set_pos(s_chat_smile, 0, 0);
-    line_style(s_chat_smile, COLOR_NEON_CYAN, 2);
-    set_visible(s_chat_smile, false);
-
-    /* 小墨？*/
-    s_chat_glass = mk_round(s_scr_chat, 8, 21, 44, 10, 0x0A1020, 4);
-    lv_obj_set_style_border_width(s_chat_glass, 1, 0);
-    lv_obj_set_style_border_color(s_chat_glass, lv_color_hex(COLOR_NEON_CYAN), 0);
-    set_visible(s_chat_glass, false);
-
-    /* ---- 聆听光环（围绕小头像脉动？---- */
-    s_chat_ring = mk_round(s_scr_chat, 6, 2, 48, 48, COLOR_NEON_CYAN, LV_RADIUS_CIRCLE);
-    lv_obj_set_style_bg_opa(s_chat_ring, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(s_chat_ring, 2, 0);
-    lv_obj_set_style_border_color(s_chat_ring, lv_color_hex(COLOR_NEON_CYAN), 0);
-    set_visible(s_chat_ring, false);
-
-    /* ---- 说话声波？ 根，随播放音量跳动） ---- */
-    for(int i = 0; i < 5; i++) {
-        s_chat_wave[i] = mk_round(s_scr_chat, 152 + i * 8, 34, 5, 4,
-                                  (i % 2) ? COLOR_NEON_PINK : COLOR_NEON_CYAN, 2);
-        set_visible(s_chat_wave[i], false);
+    /* 鲸鱼娘全身立绘背景（压暗+模糊） */
+    s_chat_bg = lv_image_create(s_scr_chat);
+    if(s_chat_bg != NULL) {
+        lv_image_set_src(s_chat_bg, &s_whale_chatbg_dsc);
+        lv_obj_set_pos(s_chat_bg, 0, 0);
+        lv_obj_clear_flag(s_chat_bg, LV_OBJ_FLAG_SCROLLABLE);
     }
 
-    /* 霓虹分隔？*/
-    lv_obj_t *line = mk_round(s_scr_chat, 8, 48, 224, 2, COLOR_NEON_PINK, 0);
+    /* 顶部渐变压暗条 */
+    lv_obj_t *topbar = mk_round(s_scr_chat, 0, 0, LCD_W, 54, 0x000000, 0);
+    lv_obj_set_style_bg_opa(topbar, LV_OPA_50, 0);
+
+    /* 左上角：鲸鱼娘表情头像（轮换） */
+    s_chat_avatar = lv_image_create(s_scr_chat);
+    if(s_chat_avatar != NULL) {
+        lv_image_set_src(s_chat_avatar, s_emo_dsc[0]);
+        lv_obj_set_pos(s_chat_avatar, 7, 7);
+        lv_obj_clear_flag(s_chat_avatar, LV_OBJ_FLAG_SCROLLABLE);
+    }
+    s_whale_last_emo = 0;
+
+    /* 名字 */
+    s_chat_name = lv_label_create(s_scr_chat);
+    lv_label_set_text(s_chat_name, "鲸鱼娘");
+    lv_obj_set_style_text_font(s_chat_name, &font_gb2312_16, 0);
+    lv_obj_set_style_text_color(s_chat_name, lv_color_hex(0x8FE6FF), 0);
+    lv_obj_set_pos(s_chat_name, 78, 10);
+
+    /* 状态文字 */
+    s_chat_status = lv_label_create(s_scr_chat);
+    lv_label_set_text(s_chat_status, "在线");
+    lv_obj_set_style_text_font(s_chat_status, &font_gb2312_16, 0);
+    lv_obj_set_style_text_color(s_chat_status, lv_color_hex(0x7FD8FF), 0);
+    lv_obj_set_pos(s_chat_status, 78, 30);
+
+    mk_wifi(s_scr_chat, 206, 34, s_wifi_bars_chat);
+
+    /* 分隔线 */
+    lv_obj_t *line = mk_round(s_scr_chat, 8, 52, 224, 1, 0x2BB8FF, 0);
     lv_obj_set_style_bg_opa(line, LV_OPA_40, 0);
 
-    /* 聊天区域（可滚动？*/
+    /* 聊天区域 */
     s_chat_area = lv_obj_create(s_scr_chat);
-    lv_obj_set_size(s_chat_area, 226, 180);
-    lv_obj_set_pos(s_chat_area, 7, 54);
+    lv_obj_set_size(s_chat_area, 226, 182);
+    lv_obj_set_pos(s_chat_area, 7, 56);
     lv_obj_set_style_bg_opa(s_chat_area, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_chat_area, 0, 0);
     lv_obj_set_style_pad_all(s_chat_area, 2, 0);
@@ -1980,9 +2412,6 @@ static void ui_chat_create(void)
     lv_obj_set_scrollbar_mode(s_chat_area, LV_SCROLLBAR_MODE_OFF);
 }
 
-/**
- * @brief 添加对话气泡
- */
 static void ui_add_bubble(const char *text, bool is_user)
 {
     if(s_chat_area == NULL || text == NULL) {
@@ -2030,24 +2459,43 @@ static void ui_add_bubble(const char *text, bool is_user)
     lv_obj_scroll_to_view(bubble, LV_ANIM_ON);
 }
 
-/* ======================= 4. 关机界面 ======================= */
+/* ======================= 4. 关机界面（反向闭眼 + 画面变暗） ======================= */
 
 static void ui_shutdown_create(void)
 {
     s_scr_off = mk_screen();
-    s_off_ring = mk_round(s_scr_off, 70, 70, 100, 100, COLOR_NEON_CYAN, LV_RADIUS_CIRCLE);
-    lv_obj_set_style_bg_opa(s_off_ring, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(s_off_ring, 3, 0);
-    lv_obj_set_style_border_color(s_off_ring, lv_color_hex(COLOR_NEON_CYAN), 0);
-    lv_obj_set_style_shadow_width(s_off_ring, 24, 0);
-    lv_obj_set_style_shadow_color(s_off_ring, lv_color_hex(COLOR_NEON_CYAN), 0);
-    lv_obj_set_style_shadow_opa(s_off_ring, LV_OPA_50, 0);
 
-    lv_obj_t *lbl = lv_label_create(s_scr_off);
-    lv_label_set_text(lbl, "关机");
-    lv_obj_set_style_text_font(lbl, &font_gb2312_16, 0);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(COLOR_NEON_PINK), 0);
-    lv_obj_center(lbl);
+    /* 同一张全景背景 */
+    s_off_bg = lv_image_create(s_scr_off);
+    if(s_off_bg != NULL) {
+        lv_image_set_src(s_off_bg, &s_boot_bg_dsc);
+        lv_obj_set_pos(s_off_bg, 0, 0);
+        lv_obj_clear_flag(s_off_bg, LV_OBJ_FLAG_SCROLLABLE);
+    }
+
+    /* 眼睛画布：关机时反向闭合 */
+    s_off_eye_buf = heap_caps_malloc((size_t)BOOT_EYE_W * BOOT_EYE_H * 4, MALLOC_CAP_SPIRAM);
+    if(s_off_eye_buf != NULL) {
+        memset(s_off_eye_buf, 0, (size_t)BOOT_EYE_W * BOOT_EYE_H * 4);
+        s_off_eye = lv_canvas_create(s_scr_off);
+        if(s_off_eye != NULL) {
+            lv_canvas_set_buffer(s_off_eye, s_off_eye_buf, BOOT_EYE_W, BOOT_EYE_H,
+                                 LV_COLOR_FORMAT_ARGB8888);
+            lv_obj_set_pos(s_off_eye, 0, BOOT_EYE_Y);
+            lv_obj_set_style_pad_all(s_off_eye, 0, 0);
+            lv_obj_set_style_border_width(s_off_eye, 0, 0);
+            lv_obj_set_style_bg_opa(s_off_eye, LV_OPA_TRANSP, 0);
+            lv_obj_clear_flag(s_off_eye, LV_OBJ_FLAG_SCROLLABLE);
+        }
+    }
+
+    /* 底部提示 */
+    s_off_sub = lv_label_create(s_scr_off);
+    lv_label_set_text(s_off_sub, "POWER OFF");
+    lv_obj_set_style_text_font(s_off_sub, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_off_sub, lv_color_hex(COLOR_NEON_PINK), 0);
+    lv_obj_set_style_text_letter_space(s_off_sub, 3, 0);
+    lv_obj_align(s_off_sub, LV_ALIGN_BOTTOM_MID, 0, -6);
 }
 
 /* ======================= 界面切换 ======================= */
@@ -2411,19 +2859,68 @@ static void ui_anim_cb(lv_timer_t *t)
         s_tick++;
     }
 
-    /* ---- 开机界？---- */
+    /* ---- 开机动画：持剑鲸鱼娘淡入 + 定格 ---- */
     if(!s_boot_done) {
-        /* 扫描线上下移？*/
-        int y = (s_tick * 6) % (LCD_H + 20) - 10;
-        if(s_boot_scan) {
-            lv_obj_set_y(s_boot_scan, y);
+        uint32_t bt = (uint32_t)((esp_timer_get_time() - (int64_t)s_boot_t0) / 1000);
+
+        /* 0.12~1.0s 淡入 */
+        int opa;
+        if(bt < 120) {
+            opa = 0;
         }
-        /* 光晕呼吸 */
-        if(s_boot_glow) {
-            lv_obj_set_style_bg_opa(s_boot_glow, (s_tick % 10 < 5) ? LV_OPA_30 : LV_OPA_10, 0);
+        else if(bt < 1000) {
+            opa = (int)((bt - 120) * 255 / 880);
         }
-        /* 2.5 秒后进待？*/
-        if(s_tick >= 21) {
+        else {
+            opa = 255;
+        }
+        if(s_boot_sword != NULL && opa != s_boot_opa) {
+            s_boot_opa = opa;
+            lv_obj_set_style_opa(s_boot_sword, (lv_opa_t)opa, 0);
+        }
+
+        /* 0.6~2.2s 扫描线自上而下 */
+        if(s_boot_scan != NULL) {
+            if(bt > 600 && bt < 2200) {
+                int y = (int)((bt - 600) * (LCD_H + 16) / 1600) - 8;
+                lv_obj_set_y(s_boot_scan, y);
+                lv_obj_set_style_bg_opa(s_boot_scan, LV_OPA_50, 0);
+            }
+            else {
+                lv_obj_set_style_bg_opa(s_boot_scan, LV_OPA_TRANSP, 0);
+            }
+        }
+
+        /* 2.6s 品牌字淡入 */
+        if(s_boot_logo != NULL) {
+            int a = 0;
+            if(bt > 2600) {
+                a = (int)((bt - 2600) * 255 / 600);
+                if(a > 255) {
+                    a = 255;
+                }
+            }
+            if(a != s_boot_logo_opa) {
+                s_boot_logo_opa = a;
+                lv_obj_set_style_text_opa(s_boot_logo, (lv_opa_t)a, 0);
+            }
+        }
+        /* 3.2s 底部小字淡入 */
+        if(s_boot_sub != NULL) {
+            int a = 0;
+            if(bt > 3200) {
+                a = (int)((bt - 3200) * 255 / 600);
+                if(a > 255) {
+                    a = 255;
+                }
+            }
+            if(a != s_boot_sub_opa) {
+                s_boot_sub_opa = a;
+                lv_obj_set_style_text_opa(s_boot_sub, (lv_opa_t)a, 0);
+            }
+        }
+
+        if(bt >= BOOT_TOTAL_MS) {
             s_boot_done = true;
             show_screen(s_scr_idle);
             ui_update_clock();
@@ -2451,6 +2948,42 @@ static void ui_anim_cb(lv_timer_t *t)
     }
     if(s_tick % 8 == 0) {
         ui_update_clock();
+    }
+
+    /* ---- 主界面：鲸鱼娘 8 帧动画（帧切换显示） ---- */
+    if(s_cur_scr == s_scr_idle && s_whale != NULL && !s_music_playing) {
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        if(now_ms - s_anim_last_ms >= 280) {
+            s_anim_last_ms = now_ms;
+            s_anim_idx = (s_anim_idx + 1) % WHALE_ANIM_FRAMES;
+            lv_image_set_src(s_whale, s_anim_dsc[s_anim_idx]);
+        }
+    }
+
+    /* ---- 聊天界面：左上角表情随状态/时间轮换 ---- */
+    if(s_cur_scr == s_scr_chat && s_chat_avatar != NULL && (s_frame % 7) == 0) {
+        int emo;
+        switch(s_state) {
+        case DISPLAY_STATE_SPEAKING:
+            emo = 1;               /* 开心 */
+            break;
+        case DISPLAY_STATE_THINKING:
+            emo = 3;               /* 吐槽/疑惑 */
+            break;
+        case DISPLAY_STATE_ERROR:
+            emo = 3;
+            break;
+        case DISPLAY_STATE_LISTENING:
+            emo = 2;               /* 大笑/专注 */
+            break;
+        default:
+            emo = (s_tick / 22) % 4;
+            break;
+        }
+        if(emo != s_whale_last_emo) {
+            s_whale_last_emo = emo;
+            lv_image_set_src(s_chat_avatar, s_emo_dsc[emo]);
+        }
     }
 
     /* 聊天界面：空？5 秒后自动回待？*/
@@ -2584,16 +3117,10 @@ static void ui_anim_cb(lv_timer_t *t)
         }
     }
 
-    /* ---- 关机动画：光环收？---- */
-    if(s_cur_scr == s_scr_off && s_off_ring != NULL) {
-        static int off_tick = 0;
-        off_tick++;
-        int r = 100 - off_tick * 2;
-        if(r < 12) {
-            r = 12;
-        }
-        lv_obj_set_size(s_off_ring, r, r);
-        lv_obj_set_pos(s_off_ring, 120 - r / 2, 120 - r / 2);
+    /* ---- 关机动画：眼睛闭合 + 画面变暗 ---- */
+    if(s_cur_scr == s_scr_off && s_off_eye_buf != NULL) {
+        uint32_t ot = (uint32_t)((esp_timer_get_time() - (int64_t)s_off_t0) / 1000);
+        off_anim_step(ot);
     }
 
     /* WiFi 断开时信号格闪烁 */
@@ -2636,6 +3163,8 @@ static void lvgl_task(void *arg)
         }
         if(s_shutdown_req) {
             s_shutdown_req = false;
+            s_off_t0 = (uint32_t)(esp_timer_get_time() / 1000);
+            s_off_bg_opa = -1;
             show_screen(s_scr_off);
         }
         while(xQueueReceive(s_msg_q, &msg, 0) == pdTRUE) {
@@ -2665,6 +3194,7 @@ esp_err_t display_init(void)
 
     /* 四个界面 */
     ui_boot_create();
+    s_boot_t0 = (uint32_t)(esp_timer_get_time() / 1000);
     ui_idle_create();
     ui_chat_create();
     ui_shutdown_create();
@@ -2720,7 +3250,7 @@ void display_add_message(bool is_user, const char *text)
 void display_play_shutdown(void)
 {
     s_shutdown_req = true;
-    vTaskDelay(pdMS_TO_TICKS(1600));
+    vTaskDelay(pdMS_TO_TICKS(OFF_TOTAL_MS));
     /* 关屏幕显？+ 关背光（否则深度睡眠后背光还亮着？*/
     if(s_panel != NULL) {
         esp_lcd_panel_disp_on_off(s_panel, false);
