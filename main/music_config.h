@@ -15,7 +15,7 @@
 
 static const char *MUSIC_STATIONS[MUSIC_STATION_COUNT] = {
     /* 强制播放本地 HTTP 服务上的歌（电脑开 start_music_server.ps1，文件放 D:\music_local） */
-    "http://192.168.31.22:8000/zhujue_mono.mp3",
+    "http://192.168.31.22:8000/zhujue_mono.mp3",   /* 你的歌 */
     "http://192.168.31.22:8000/test1.mp3",
     "https://dl.espressif.com/dl/audio/ff-16b-2c-44100hz.mp3",
 };

@@ -38,6 +38,10 @@ esp_err_t speaker_init(void)
 
     i2s_std_config_t std_cfg = board_i2s_config(AUDIO_OUT_RATE, SPK_I2S_BCLK, SPK_I2S_LRCK,
                                                 I2S_GPIO_UNUSED, SPK_I2S_DOUT);
+    /* 喇叭单独用 16bit：之前 32bit + 左移16位 在这颗功放上会有机械滋滋声，
+     * 标准 16bit 格式兼容性最好（麦克风侧仍保持 32bit 不变） */
+    std_cfg.slot_cfg.data_bit_width = I2S_DATA_BIT_WIDTH_16BIT;
+    std_cfg.slot_cfg.ws_width = I2S_DATA_BIT_WIDTH_16BIT;
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_tx, &std_cfg), TAG, "初始化 I2S 失败");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx), TAG, "使能 I2S 失败");
 
@@ -51,22 +55,22 @@ esp_err_t speaker_init(void)
  */
 void speaker_play_pcm(const int16_t *pcm16, int samples)
 {
-    static int32_t buf[SPEAKER_MAX_SAMPLES];
-
-    if(pcm16 == NULL || samples <= 0) {
+    if(pcm16 == NULL || samples <= 0 || s_tx == NULL) {
         return;
     }
-    if(samples > SPEAKER_MAX_SAMPLES) {
-        samples = SPEAKER_MAX_SAMPLES;
+    /* 分块写完整个缓冲：以前直接截断到 SPEAKER_MAX_SAMPLES(2048)，
+     * 导致 TTS 语音和测试音被截短（2 秒测试音只播了 0.128 秒） */
+    int off = 0;
+    while(off < samples) {
+        int n = samples - off;
+        if(n > SPEAKER_MAX_SAMPLES) {
+            n = SPEAKER_MAX_SAMPLES;
+        }
+        size_t written = 0;
+        i2s_channel_write(s_tx, pcm16 + off, (size_t)n * sizeof(int16_t), &written,
+                          pdMS_TO_TICKS(500));
+        off += n;
     }
-
-    for(int i = 0; i < samples; i++) {
-        buf[i] = ((int32_t)pcm16[i]) << 16;   /* 16 位左移成 32 位 */
-    }
-
-    size_t written = 0;
-    i2s_channel_write(s_tx, buf, (size_t)samples * sizeof(int32_t), &written,
-                      pdMS_TO_TICKS(500));
 }
 
 /**
@@ -75,8 +79,10 @@ void speaker_play_pcm(const int16_t *pcm16, int samples)
 void speaker_beep(int ms, int freq)
 {
     const int total = AUDIO_OUT_RATE * ms / 1000;
-    int16_t *buf = malloc((size_t)total * sizeof(int16_t));
+    /* 放 PSRAM：2 秒 16kHz 需要 64KB，内部 RAM 已经没有这么大块了 */
+    int16_t *buf = heap_caps_malloc((size_t)total * sizeof(int16_t), MALLOC_CAP_SPIRAM);
     if(buf == NULL) {
+        ESP_LOGW(TAG, "测试音缓冲分配失败(%d 采样)", total);
         return;
     }
     for(int i = 0; i < total; i++) {
@@ -119,22 +125,17 @@ esp_err_t speaker_music_begin(uint32_t sample_rate)
 
 void speaker_music_write(const int16_t *mono, int samples)
 {
-    static int32_t buf[2048];
-
     if(s_tx == NULL || mono == NULL || samples <= 0) {
         return;
     }
     int off = 0;
     while(off < samples) {
         int n = samples - off;
-        if(n > (int)(sizeof(buf) / sizeof(buf[0]))) {
-            n = (int)(sizeof(buf) / sizeof(buf[0]));
-        }
-        for(int i = 0; i < n; i++) {
-            buf[i] = ((int32_t)mono[off + i]) << 16;   /* 16 位左移成 32 位 */
+        if(n > 2048) {
+            n = 2048;
         }
         size_t written = 0;
-        i2s_channel_write(s_tx, buf, (size_t)n * sizeof(int32_t), &written, pdMS_TO_TICKS(500));
+        i2s_channel_write(s_tx, mono + off, (size_t)n * sizeof(int16_t), &written, pdMS_TO_TICKS(500));
         off += n;
     }
 }

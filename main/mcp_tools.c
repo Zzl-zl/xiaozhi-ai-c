@@ -6,6 +6,7 @@
  *       我们注册一个 self.led.set 工具，模型就能在对话中控制板载 LED。
  */
 
+#include <math.h>
 #include "mcp_tools.h"
 
 #include "esp_mcp_tool.h"
@@ -14,9 +15,11 @@
 #include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 
 #include "board_config.h"
 #include "camera.h"
+#include "speaker.h"
 #include "music.h"
 #include "xiaozhi_app.h"
 
@@ -143,6 +146,43 @@ static esp_mcp_value_t camera_photo_cb(const esp_mcp_property_list_t *properties
     return esp_mcp_value_create_string(reply ? reply : "拍照失败");
 }
 
+static esp_mcp_value_t speaker_test_cb(const esp_mcp_property_list_t *properties)
+{
+    (void)properties;
+    ESP_LOGI(TAG, "MCP 调用：喇叭正弦测试（440Hz，2 秒）");
+    speaker_beep(2000, 440);
+    return esp_mcp_value_create_string("已播放 440Hz 正弦测试音 2 秒，请听是否有杂音");
+}
+
+/* 流式正弦测试：走和音乐完全相同的路径（speaker_music_begin/write，44100Hz，分块）
+ * 用来区分"MP3 解码数据问题"还是"流式播放链路问题" */
+static esp_mcp_value_t speaker_stream_test_cb(const esp_mcp_property_list_t *properties)
+{
+    (void)properties;
+    ESP_LOGI(TAG, "MCP 调用：流式正弦测试（44100Hz，2 秒，4096 采样/块）");
+
+    const int total = 44100 * 2;
+    int16_t *buf = heap_caps_malloc((size_t)total * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    if(buf == NULL) {
+        return esp_mcp_value_create_string("测试缓冲分配失败");
+    }
+    for(int i = 0; i < total; i++) {
+        buf[i] = (int16_t)(0.15 * 32767.0 * sin(2.0 * 3.141592653589793 * 440.0 * i / 44100.0));
+    }
+
+    speaker_music_begin(44100);
+    for(int off = 0; off < total; off += 4096) {
+        int n = total - off;
+        if(n > 4096) {
+            n = 4096;
+        }
+        speaker_music_write(buf + off, n);
+    }
+    speaker_music_end();
+    free(buf);
+    return esp_mcp_value_create_string("已播放流式正弦测试音 2 秒（与音乐同路径），请听是否有杂音");
+}
+
 /**
  * @brief 注册 MCP 工具
  */
@@ -173,6 +213,30 @@ esp_err_t mcp_tools_init(esp_mcp_t *mcp)
     ESP_RETURN_ON_ERROR(esp_mcp_tool_add_property(led_tool, on_prop), TAG, "添加 on 属性失败");
 
     ESP_RETURN_ON_ERROR(esp_mcp_add_tool(mcp, led_tool), TAG, "注册 LED 工具失败");
+
+    /* ---- 工具：喇叭测试（播放正弦音）---- */
+    esp_mcp_tool_t *spk_tool = esp_mcp_tool_create(
+                                   "self.speaker.test",
+                                   "播放 2 秒 440Hz 测试正弦音，用于检查喇叭是否有杂音。"
+                                   "当用户说测试喇叭、喇叭有杂音、听一下喇叭时调用。",
+                                   speaker_test_cb);
+    if(spk_tool != NULL) {
+        if(esp_mcp_add_tool(mcp, spk_tool) == ESP_OK) {
+            ESP_LOGI(TAG, "MCP 工具已注册：self.speaker.test（喇叭正弦测试）");
+        }
+    }
+
+    /* ---- 工具：流式正弦测试（走音乐路径）---- */
+    esp_mcp_tool_t *spk_stream_tool = esp_mcp_tool_create(
+                                          "self.speaker.test_stream",
+                                          "用和音乐完全相同的路径播放 2 秒 44100Hz 正弦音。"
+                                          "当用户说测试流式播放、对比音乐杂音时调用。",
+                                          speaker_stream_test_cb);
+    if(spk_stream_tool != NULL) {
+        if(esp_mcp_add_tool(mcp, spk_stream_tool) == ESP_OK) {
+            ESP_LOGI(TAG, "MCP 工具已注册：self.speaker.test_stream（流式正弦测试）");
+        }
+    }
 
     /* ---- 工具：拍照识图 ---- */
     esp_mcp_tool_t *cam_tool = esp_mcp_tool_create(

@@ -96,6 +96,7 @@ static int s_retry_left = 0;                 /* 自动重试剩余次数 */
 static int s_ch = 2;
 static int s_bits = 16;
 static int s_dec_err = 0;
+static int s_frames_dbg = 0;
 static int s_rate_hits = 0;
 static uint32_t s_last_rate = 0;
 static volatile bool s_play_failed = false;   /* 当前这首没播成功 */
@@ -190,7 +191,7 @@ static void ring_put_pcm(const int16_t *pcm, int samples)
 static void music_out_task(void *arg)
 {
     (void)arg;
-    static int16_t buf[1024];
+    static int16_t buf[4096];   /* 大块写入：减少 I2S 写入间隙导致的间歇欠载(滋滋声) */
 
     uint32_t last_log = 0;
     while(1) {
@@ -228,6 +229,9 @@ static void music_out_task(void *arg)
             int n = (int)(used / 2);
             if(n > (int)(sizeof(buf) / sizeof(buf[0]))) {
                 n = (int)(sizeof(buf) / sizeof(buf[0]));
+            }
+            if(n < 256) {
+                n = 256;   /* 太小块的写入会让 I2S DMA 间歇欠载，宁可多等一点 */
             }
             int got = ring_read((uint8_t *)buf, n * 2);
             if(got < 2) {
@@ -359,9 +363,6 @@ static void write_pcm(const uint8_t *pcm, int size, int channels, int bits)
 
     const int16_t *src = (const int16_t *)pcm;
     int64_t sum = 0;
-    /* 一阶低通滤波：消掉帧边界/量化产生的高频毛刺（机械感杂音），
-     * 系数取得很小，对音质影响可忽略 */
-    static int32_t s_lp = 0;
     for(int i = 0; i < frames; i++) {
         int32_t v;
         if(channels == 1) {
@@ -370,8 +371,6 @@ static void write_pcm(const uint8_t *pcm, int size, int channels, int bits)
         else {
             v = ((int32_t)src[i * channels] + (int32_t)src[i * channels + 1]) / 2;
         }
-        v = (v * 7 + s_lp * 1) / 8;
-        s_lp = v;
         /* 四舍五入代替截断：低音量时截断误差会造成持续的量化噪声 */
         v = (v * s_volume + (v >= 0 ? 50 : -50)) / 100;
         if(v > 32767) {
@@ -433,6 +432,8 @@ static void dec_feed(const uint8_t *data, int len)
         p += off;
         left -= off;
 
+        /* 清零输出缓冲：防止 outputSamps 大于实际有效数据时把垃圾当音频输出（刺耳噪声） */
+        memset(s_pcm, 0, 4608);
         int err = MP3Decode(s_dec, &p, &left, (short *)s_pcm, 0);
         if(err == ERR_MP3_INDATA_UNDERFLOW || err == ERR_MP3_MAINDATA_UNDERFLOW) {
             /* 数据不够：保留余数等下一批数据拼上 */
@@ -472,6 +473,11 @@ static void dec_feed(const uint8_t *data, int len)
 
         MP3FrameInfo fi;
         MP3GetLastFrameInfo(s_dec, &fi);
+        if(s_frames_dbg < 8) {
+            ESP_LOGI(TAG, "帧信息: outputSamps=%d nChans=%d samprate=%d bits=%d layer=%d",
+                     fi.outputSamps, fi.nChans, fi.samprate, fi.bitsPerSample, fi.layer);
+            s_frames_dbg++;
+        }
         if(fi.outputSamps <= 0) {
             continue;
         }
