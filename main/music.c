@@ -31,6 +31,7 @@
 
 #include "esp_mp3_dec.h"
 #include "esp_audio_dec.h"
+#include "mp3dec.h"
 
 #include "speaker.h"
 #include "music.h"
@@ -41,7 +42,7 @@
 
 static const char *TAG = "music";
 
-#define MUSIC_READ_SIZE       2048
+#define MUSIC_READ_SIZE       4096
 #define MUSIC_PCM_MAX         32768
 #define MUSIC_TASK_STACK      16384
 #define MUSIC_URL_MAX         512
@@ -68,8 +69,24 @@ static volatile bool s_uploading = false;
 static char s_status[96] = "空闲";
 
 static void *s_dec = NULL;
+
+/* ---- 歌词/歌曲信息 ---- */
+#define LRC_MAX 200
+#define LRC_TXT_LEN 72
+static int s_song_id = 0;
+static char s_song_name[80] = "";
+static char s_song_artist[80] = "";
+static uint32_t s_lyric_ms[LRC_MAX];
+static char s_lyric_txt[LRC_MAX][LRC_TXT_LEN];
+static int s_lyric_n = 0;
+static volatile uint64_t s_played_pcm = 0;
 static uint8_t *s_pcm = NULL;
 static uint32_t s_pcm_cap = 0;
+/* MP3 输入余数缓存：HTTP 每次读的字节不一定落在帧边界上，
+ * 不保留余数会导致下次从帧中间开始喂，帧头错位（日志表现为 FB 92 xx 而不是 FF FB xx） */
+#define MP3_TAIL_MAX 32768
+static uint8_t s_tail[MP3_TAIL_MAX];
+static int s_tail_len = 0;
 static int16_t *s_mono = NULL;
 static int s_mono_cap = 0;
 static uint32_t s_rate = 0;
@@ -89,7 +106,7 @@ static int s_cand_count = 0;
 static bool search_and_play_blocking(const char *keyword);   /* 前置声明：只在音乐任务里执行 */
 
 /* ---------------- PCM 环形缓冲 + 独立 I2S 输出任务 ---------------- */
-#define PCM_RING_BYTES   (64 * 1024)     /* 约 0.74 秒 @44.1kHz 单声道 */
+#define PCM_RING_BYTES   (1024 * 1024)   /* 约 11.6 秒 @44.1kHz 单声道（PSRAM，大缓冲抗抖动） */
 static uint8_t *s_ring = NULL;
 static volatile uint32_t s_ring_w = 0;
 static volatile uint32_t s_ring_r = 0;
@@ -97,6 +114,7 @@ static SemaphoreHandle_t s_ring_lock = NULL;
 static TaskHandle_t s_out_task = NULL;
 static volatile bool s_out_run = false;
 static volatile bool s_out_started = false;
+static uint32_t s_out_wait_ms = 0;   /* 预缓冲等待起点（超时强制开始） */
 static volatile bool s_paused = false;        /* 唤醒对话时暂停（缓冲保留） */
 static uint32_t s_pause_ms = 0;               /* 暂停起始时间 */
 static uint32_t s_underrun = 0;      /* 环形缓冲断流次数（诊断） */
@@ -191,8 +209,15 @@ static void music_out_task(void *arg)
             uint32_t used = ring_used();
             if(!s_out_started) {
                 /* 预缓冲约 0.5 秒，避免一上来就断音 */
-                if(used < 22050) {
-                    break;
+                if(used < 44100) {   /* 预缓冲约 1 秒（有 3 秒超时保护，攒不满也会开播） */
+                    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+                    if(s_out_wait_ms == 0) {
+                        s_out_wait_ms = now_ms;
+                    }
+                    if(now_ms - s_out_wait_ms < 3000) {
+                        break;        /* 还没攒够，继续等（最多 3 秒） */
+                    }
+                    ESP_LOGW(TAG, "预缓冲超时（%u 采样），强制开始", (unsigned)used);
                 }
                 s_out_started = true;
             }
@@ -230,7 +255,7 @@ static bool audio_out_start(void)
         }
     }
     if(s_out_task == NULL) {
-        if(xTaskCreate(music_out_task, "music_out", 3072, NULL, 7, &s_out_task) != pdPASS) {
+        if(xTaskCreateWithCaps(music_out_task, "music_out", 3072, NULL, 7, &s_out_task, MALLOC_CAP_SPIRAM) != pdPASS) {
             ESP_LOGE(TAG, "音频输出任务创建失败");
             return false;
         }
@@ -241,6 +266,7 @@ static bool audio_out_start(void)
     xSemaphoreGive(s_ring_lock);
     s_out_run = true;
     s_out_started = false;
+    s_out_wait_ms = 0;
     return true;
 }
 
@@ -262,9 +288,9 @@ static bool dec_open(void)
     if(s_dec != NULL) {
         return true;
     }
-    if(esp_mp3_dec_open(NULL, 0, &s_dec) != ESP_AUDIO_ERR_OK || s_dec == NULL) {
-        ESP_LOGE(TAG, "MP3 解码器打开失败");
-        s_dec = NULL;
+    s_dec = MP3InitDecoder();
+    if(s_dec == NULL) {
+        ESP_LOGE(TAG, "helia MP3 解码器初始化失败");
         return false;
     }
     if(s_pcm == NULL) {
@@ -276,12 +302,13 @@ static bool dec_open(void)
         }
         if(s_pcm == NULL) {
             ESP_LOGE(TAG, "PCM 缓冲分配失败");
-            esp_mp3_dec_close(s_dec);
+            MP3FreeDecoder(s_dec);
             s_dec = NULL;
             return false;
         }
     }
     s_rate = 0;
+    s_tail_len = 0;          /* 新歌：清空输入余数 */
     s_ch = 2;
     s_bits = 16;
     s_dec_err = 0;
@@ -293,7 +320,7 @@ static bool dec_open(void)
 static void dec_close(void)
 {
     if(s_dec != NULL) {
-        esp_mp3_dec_close(s_dec);
+        MP3FreeDecoder(s_dec);
         s_dec = NULL;
     }
     if(s_mono != NULL) {
@@ -355,97 +382,121 @@ static void write_pcm(const uint8_t *pcm, int size, int channels, int bits)
     display_set_music_level((uint8_t)level);
 }
 
-/* 喂一段 MP3 数据给解码器 */
+/* 喂一段 MP3 数据给 helia 解码器 */
 static void dec_feed(const uint8_t *data, int len)
 {
-    if(data == NULL || len <= 0 || s_dec == NULL) {
+    if(data == NULL || len <= 0 || s_dec == NULL || s_paused) {
         return;
     }
 
-    esp_audio_dec_in_raw_t raw = {0};
-    raw.buffer = (uint8_t *)data;
-    raw.len = (uint32_t)len;
-
-    while(raw.len > 0 && !s_stop_req) {
-        esp_audio_dec_out_frame_t out = {0};
-        out.buffer = s_pcm;
-        out.len = s_pcm_cap;
-
-        esp_audio_dec_info_t info = {0};
-        esp_audio_err_t err = esp_mp3_dec_decode(s_dec, &raw, &out, &info);
-
-        if(err == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
-            /* 输出缓冲不够：扩大后重试 */
-            uint32_t need = out.needed_size + 1024;
-            if(need > 256 * 1024) {
-                break;
-            }
-            uint8_t *nb = heap_caps_malloc(need, MALLOC_CAP_SPIRAM);
-            if(nb == NULL) {
-                break;
-            }
-            free(s_pcm);
-            s_pcm = nb;
-            s_pcm_cap = need;
-            continue;
+    /* 拼上上次没消费完的余数，保证从帧边界开始 */
+    uint8_t *inbuf = (uint8_t *)data;
+    int total = len;
+    if(s_tail_len > 0) {
+        if(s_tail_len + len > MP3_TAIL_MAX) {
+            ESP_LOGW(TAG, "余数缓存溢出，丢弃 %d 字节", s_tail_len);
+            s_tail_len = 0;
         }
-
-        if(err != ESP_AUDIO_ERR_OK || out.decoded_size == 0) {
-            s_dec_err++;
-            /* 偶发坏帧：每 50 次错误重置一次解码器继续播，不中断整首歌 */
-            if((s_dec_err % 50) == 0 && s_dec != NULL) {
-                esp_mp3_dec_reset(s_dec);
-            }
-            if(s_dec_err > 1500) {
-                ESP_LOGW(TAG, "连续解码失败过多，判定播放失败");
-                s_play_failed = true;
-                break;
-            }
-            if(raw.consumed == 0) {
-                break;
-            }
-            raw.buffer += raw.consumed;
-            raw.len -= raw.consumed;
-            continue;
+        else {
+            memcpy(s_tail + s_tail_len, data, len);
+            inbuf = s_tail;
+            total = s_tail_len + len;
+            s_tail_len = 0;
         }
+    }
 
-        if(out.decoded_size > s_pcm_cap) {
+    unsigned char *p = inbuf;
+    int left = total;
+
+    while(left > 0 && !s_stop_req) {
+        if(s_paused) {
+            return;
+        }
+        /* helia：先找同步字，跳过 ID3/坏数据 */
+        int off = MP3FindSyncWord(p, left);
+        if(off < 0) {
+            left = 0;               /* 整块没有同步字，丢弃 */
             break;
         }
-        /* 只认第一帧解出的参数：后面解码器偶尔会回乱值，不能反复切 I2S 采样率 */
+        p += off;
+        left -= off;
+
+        int err = MP3Decode(s_dec, &p, &left, (short *)s_pcm, 0);
+        if(err == ERR_MP3_INDATA_UNDERFLOW || err == ERR_MP3_MAINDATA_UNDERFLOW) {
+            /* 数据不够：保留余数等下一批数据拼上 */
+            break;
+        }
+        if(err == ERR_MP3_INVALID_FRAMEHEADER) {
+            /* 帧头解析失败：helia 没推进 inbuf，手动跳过 1 字节重找同步 */
+            p++;
+            left--;
+            s_dec_err++;
+            if(s_dec_err > 400) {
+                ESP_LOGW(TAG, "helia 连续解码失败 %d 次，判定播放失败", s_dec_err);
+                s_play_failed = true;
+                s_tail_len = 0;
+                return;
+            }
+            continue;
+        }
+        if(err != ERR_MP3_NONE) {
+            /* 其他错误：helia 内部已经推进了 inbuf（各个错误推进量不同），
+             * 绝对不能再 p++（会多跳导致帧头错位 -> 听感跳段）。
+             * 但要按指针差重算 left，防止 INVALID_SIDEINFO 那种"推进了 p 却没减 left"的不一致。 */
+            s_dec_err++;
+            if(s_dec_err > 400) {
+                ESP_LOGW(TAG, "helia 连续解码失败 %d 次，判定播放失败", s_dec_err);
+                s_play_failed = true;
+                s_tail_len = 0;
+                return;
+            }
+            left = total - (int)(p - inbuf);
+            if(left <= 0) {
+                break;
+            }
+            continue;
+        }
+        s_dec_err = 0;
+
+        MP3FrameInfo fi;
+        MP3GetLastFrameInfo(s_dec, &fi);
+        if(fi.outputSamps <= 0) {
+            continue;
+        }
+        int pcm_bytes = fi.outputSamps * 2;    /* outputSamps 是采样点数（含声道） */
+        if(pcm_bytes > (int)s_pcm_cap) {
+            break;
+        }
+
+        /* 第一帧锁定采样率/声道 */
         if(s_rate == 0) {
-            uint32_t r = (uint32_t)info.sample_rate;
+            uint32_t r = (uint32_t)fi.samprate;
             bool valid = (r == 8000 || r == 11025 || r == 12000 || r == 16000 ||
                           r == 22050 || r == 24000 || r == 32000 || r == 44100 || r == 48000);
             if(valid) {
-                if(r == s_last_rate) {
-                    s_rate_hits++;
-                }
-                else {
-                    s_last_rate = r;
-                    s_rate_hits = 1;
-                }
-                if(s_rate_hits >= 3) {
-                    s_rate = r;
-                    s_ch = (info.channel >= 1 && info.channel <= 2) ? info.channel : 2;
-                    s_bits = 16;
-                    ESP_LOGI(TAG, "音乐输出参数（锁定）：%u Hz / %d 声道 / %d bit",
-                             (unsigned)s_rate, s_ch, s_bits);
-                    speaker_music_begin(s_rate);
-                }
-                else {
-                    continue;      /* 还没确认，先不输出 */
-                }
+                s_rate = r;
+                s_ch = (fi.nChans == 1) ? 1 : 2;
+                s_bits = 16;
+                ESP_LOGI(TAG, "helia 输出参数：%u Hz / %d 声道 / %d bit",
+                         (unsigned)s_rate, s_ch, s_bits);
+                speaker_music_begin(s_rate);
             }
             else {
                 continue;
             }
         }
-        s_dec_err = 0;
-        write_pcm(s_pcm, (int)out.decoded_size, s_ch, s_bits);
+        s_played_pcm += pcm_bytes;
+        write_pcm((const uint8_t *)s_pcm, pcm_bytes, s_ch, 16);
+        left = total - (int)(p - inbuf);   /* 指针差重算，保证一致性 */
+    }
 
-        raw.buffer += raw.consumed;
-        raw.len -= raw.consumed;
+    /* 保存没消费完的余数 */
+    if(left > 0 && left <= MP3_TAIL_MAX && !s_stop_req) {
+        memmove(s_tail, p, left);
+        s_tail_len = left;
+    }
+    else if(left > MP3_TAIL_MAX) {
+        s_tail_len = 0;
     }
 }
 
@@ -546,6 +597,109 @@ static int http_get_text(const char *url, char *out, int out_size)
     return total;
 }
 
+/* ---- 歌词：LRC 解析 ---- */
+static void lrc_parse_buf(char *lrc)
+{
+    s_lyric_n = 0;
+    char *p = lrc;
+    while(p != NULL && *p != 0 && s_lyric_n < LRC_MAX) {
+        char *e = strchr(p, '\n');
+        if(e != NULL) {
+            *e = 0;
+        }
+        int mm = 0, ss = 0, xx = 0;
+        if(sscanf(p, "[%d:%d.%d]", &mm, &ss, &xx) >= 2) {
+            char *t = strchr(p, ']');
+            if(t != NULL && t[1] != 0) {
+                s_lyric_ms[s_lyric_n] = (uint32_t)(mm * 60000 + ss * 1000 + xx);
+                snprintf(s_lyric_txt[s_lyric_n], LRC_TXT_LEN, "%s", t + 1);
+                s_lyric_n++;
+            }
+        }
+        p = (e != NULL) ? e + 1 : NULL;
+    }
+    ESP_LOGI(TAG, "歌词解析：%d 行", s_lyric_n);
+}
+
+/* 拉取并解析歌词（网易云公开接口） */
+static void music_fetch_lyric(int song_id)
+{
+    s_lyric_n = 0;
+    if(song_id <= 0) {
+        return;
+    }
+    char *url = heap_caps_malloc(300, MALLOC_CAP_SPIRAM);
+    char *resp = heap_caps_malloc(48 * 1024, MALLOC_CAP_SPIRAM);
+    if(url == NULL || resp == NULL) {
+        free(url);
+        free(resp);
+        return;
+    }
+    snprintf(url, 300,
+             "https://music.163.com/api/song/lyric?id=%d&lv=1&kv=1&tv=-1", song_id);
+    int n = http_get_text(url, resp, 48 * 1024);
+    if(n > 0) {
+        cJSON *root = cJSON_Parse(resp);
+        if(root != NULL) {
+            cJSON *lrc = cJSON_GetObjectItem(root, "lrc");
+            cJSON *lyric = lrc ? cJSON_GetObjectItem(lrc, "lyric") : NULL;
+            if(cJSON_IsString(lyric) && lyric->valuestring != NULL) {
+                char *copy = strdup(lyric->valuestring);
+                if(copy != NULL) {
+                    lrc_parse_buf(copy);
+                    free(copy);
+                }
+            }
+            cJSON_Delete(root);
+        }
+    }
+    free(url);
+    free(resp);
+}
+
+/* 保存歌曲信息（搜索时调用） */
+static void song_info_set(int id, const char *name, const char *artist)
+{
+    s_song_id = id;
+    snprintf(s_song_name, sizeof(s_song_name), "%s", (name && name[0]) ? name : "未知曲目");
+    snprintf(s_song_artist, sizeof(s_song_artist), "%s", artist ? artist : "");
+    ESP_LOGI(TAG, "歌曲信息：%s - %s (id=%d)", s_song_name, s_song_artist, s_song_id);
+}
+
+const char *music_get_song_name(void)
+{
+    return s_song_name;
+}
+
+const char *music_get_song_artist(void)
+{
+    return s_song_artist;
+}
+
+/* 按播放进度返回当前歌词行 */
+const char *music_get_current_lyric(void)
+{
+    if(s_lyric_n == 0) {
+        return "";
+    }
+    uint32_t rate = s_rate ? s_rate : 44100;
+    int ch = (s_ch >= 1 && s_ch <= 2) ? s_ch : 2;
+    uint32_t ms = (uint32_t)(s_played_pcm * 1000ULL / (uint64_t)(rate * ch * 2));
+    int idx = -1;
+    for(int i = 0; i < s_lyric_n; i++) {
+        if(s_lyric_ms[i] <= ms) {
+            idx = i;
+        }
+        else {
+            break;
+        }
+    }
+    if(idx < 0) {
+        return "";
+    }
+    return s_lyric_txt[idx];
+}
+
 /* 网易云公开搜索：拿候选歌曲 id，拼成外链 */
 static int netease_search_urls(const char *keyword, char urls[][320], int max_urls)
 {
@@ -576,6 +730,23 @@ static int netease_search_urls(const char *keyword, char urls[][320], int max_ur
                     }
                     cJSON *id = cJSON_GetObjectItem(song, "id");
                     if(cJSON_IsNumber(id)) {
+                        /* 第一首：保存歌曲信息 + 拉歌词 */
+                        if(found == 0) {
+                            cJSON *nm = cJSON_GetObjectItem(song, "name");
+                            cJSON *ar = cJSON_GetObjectItem(song, "artists");
+                            const char *aname = "";
+                            if(cJSON_IsArray(ar)) {
+                                cJSON *a0 = cJSON_GetArrayItem(ar, 0);
+                                cJSON *nm2 = a0 ? cJSON_GetObjectItem(a0, "name") : NULL;
+                                if(cJSON_IsString(nm2)) {
+                                    aname = nm2->valuestring;
+                                }
+                            }
+                            song_info_set(id->valueint,
+                                          cJSON_IsString(nm) ? nm->valuestring : "",
+                                          aname);
+                            music_fetch_lyric(id->valueint);
+                        }
                         snprintf(urls[found], 320,
                                  "http://music.163.com/song/media/outer/url?id=%d.mp3", id->valueint);
                         found++;
@@ -639,9 +810,10 @@ static void music_play_url_blocking(const char *url)
     audio_out_start();
     xSemaphoreGive(s_lock);
 
-    if(s_retry_left <= 0) {
-        s_retry_left = 5;          /* 失败最多自动试 5 首，避免死循环 */
-    }
+    /* 注意：这里绝不能重置 s_retry_left，否则失败->递减->归零->重置->再失败，
+     * 会变成无限重试死循环，把 music 任务占满 CPU（看门狗触发、麦克风数据丢失）。
+     * 成功播放时才在拿到数据的位置重置。 */
+    s_played_pcm = 0;              /* 新歌从头算播放进度 */
     music_http_start();          /* 首次播放时才启动手机控制网页（省内部 RAM） */
     snprintf(s_last_url, sizeof(s_last_url), "%s", url);
     ESP_LOGI(TAG, "开始拉流：%s", url);
@@ -651,6 +823,7 @@ static void music_play_url_blocking(const char *url)
     }
     ESP_LOGI(TAG, "流已打开，长度 %lld", (long long)esp_http_client_get_content_length(cli));
     s_play_failed = false;
+    s_retry_left = 5;              /* 这首确认能播了，重置失败重试计数 */
 
     {
         /* 跳过 ID3v2 标签 */
@@ -688,6 +861,12 @@ static void music_play_url_blocking(const char *url)
     }
 
     while(!s_stop_req) {
+        /* 解码已判定失败（格式不支持等）：立刻停止整首，交给外层切歌逻辑，
+         * 否则外层会继续读网络->再解码->继续刷屏，把 CPU 和 WebSocket 一起拖死 */
+        if(s_play_failed) {
+            ESP_LOGW(TAG, "播放失败，停止当前曲目");
+            break;
+        }
         /* 对话中暂停：不解码也不读网络，缓冲保留 */
         if(s_paused) {
             vTaskDelay(pdMS_TO_TICKS(20));
@@ -732,6 +911,9 @@ cleanup:
     snprintf(s_status, sizeof(s_status), "已停止");
     bool will_retry = failed && (s_retry_left > 0);
     if(!will_retry) {
+        if(failed) {
+            ESP_LOGW(TAG, "连续多首播放失败，停止音乐（回待机），不再重试");
+        }
         display_set_music_playing(false);
         s_retry_left = 0;
     }
@@ -848,6 +1030,7 @@ esp_err_t music_init(void)
         return ESP_ERR_NO_MEM;
     }
     /* 按 C++/LVGL 的思路：任务栈放内部 RAM（响应快），PCM/解码缓冲仍留 PSRAM */
+    /* 注意：music 任务栈必须放内部 RAM！esp_mp3_dec 是预编译库，栈在 PSRAM 时解码会失败 */
     BaseType_t ret = xTaskCreate(music_task, "music", 10240, NULL, 5, &s_task);
     if(ret != pdPASS) {
         ESP_LOGE(TAG, "音乐任务创建失败");
@@ -1215,7 +1398,7 @@ esp_err_t music_http_start(void)
 
     esp_err_t err = httpd_start(&server, &config);
     if(err != ESP_OK) {
-        ESP_LOGE(TAG, "音乐网页服务启动失败: %s", esp_err_to_name(err));
+        ESP_LOGD(TAG, "音乐网页服务未启动");
         return err;
     }
 

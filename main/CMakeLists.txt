@@ -1,4 +1,7 @@
-﻿idf_component_register(
+# 自动收集 img_to_c.py 生成的资源 C 文件（新增素材后重新 cmake 即可）
+file(GLOB GENERATED_SRCS "${CMAKE_CURRENT_LIST_DIR}/generated/*.c")
+
+idf_component_register(
     SRCS
         "app_main.c"
         "mic.c"
@@ -14,10 +17,13 @@
         "wake_word.c"
         "xiaozhi_app.c"
         "boot_bg.c"
-        "whale_assets.c"
-        "whale_anim.c"
+        "boot_anim.c"
+        "main_anim.c"
         "font_gb2312_16.c"
-    INCLUDE_DIRS "."
+        ${GENERATED_SRCS}
+    INCLUDE_DIRS
+        "."
+        "generated"
     REQUIRES
         esp_driver_i2s
         esp_driver_gpio
@@ -33,6 +39,8 @@
         esp-sr
         lvgl
         esp32-camera
+        esp_jpeg
+        esp-libhelix-mp3
         esp_http_client
         esp_http_server
         esp-tls

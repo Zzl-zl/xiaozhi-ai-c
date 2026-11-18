@@ -1,3 +1,30 @@
+## 资源生成流程（2026-11 更新）
+
+统一使用两个脚本，**不再用 build_ui.py**：
+
+| 脚本 | 处理什么 | 产出 |
+|---|---|---|
+| `tools/img_to_c.py` | 静态图 + 主界面 8 帧 | `main/generated/*.c/.h`（编进固件） |
+| `tools/pack_boot_anim.py` | 开机 50 帧 | `main/boot_anim.bin`（JPEG，烧 assets 分区 0xB00000） |
+
+改完素材后依次运行：
+
+```
+python tools/img_to_c.py ui_source/assets -o main/generated --prefix ui_
+python tools/img_to_c.py ui_source/frames -o main/generated --prefix ui_
+python tools/pack_boot_anim.py
+```
+
+然后编译。`main/CMakeLists.txt` 已用 `file(GLOB generated/*.c)` 自动收集，
+新增图片后需要重新 cmake configure 一次。
+
+### img_to_c.py 的规则
+
+- 自动识别 PNG / JPG / JPEG / WEBP / BMP（按内容识别）
+- 带透明通道 → RGB565A8（3 字节/像素）
+- 不透明 / JPG → RGB565（2 字节/像素）
+- 文件名自动转成合法 C 符号（`emo_neutral_64.png` → `ui_emo_neutral_64_data`）
+
 # UI 素材源（鲸鱼娘主题）
 
 这里的 PNG 是**可直接编辑的源素材**。改完后运行 `..\tools\build_ui.py`，

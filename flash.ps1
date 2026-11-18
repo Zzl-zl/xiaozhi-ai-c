@@ -17,10 +17,15 @@ Write-Host ""
 Write-Host ("FLASH EXIT CODE: " + $LASTEXITCODE) -ForegroundColor Green
 
 # 开机动画 30 帧资源 -> assets 分区（0xB00000 / 5MB）
-$assetsBin = "D:\xiaozhi-c\main\assets.bin"
+$assetsBin = "D:\xiaozhi-c\main\boot_anim.bin"
 if (Test-Path -LiteralPath $assetsBin) {
     Write-Host ""
-    Write-Host ("=== Flashing assets.bin to 0xB00000 ===") -ForegroundColor Cyan
-    & $venvPy -m esptool --chip esp32s3 -p $PORT -b 460800 write_flash 0xB00000 $assetsBin
+    Write-Host ("=== Flashing boot_anim.bin to 0xB00000 ===") -ForegroundColor Cyan
+    $mainBin = 'D:\xiaozhi-c\main\main_anim.bin'
+    if (Test-Path -LiteralPath $mainBin) {
+        & $venvPy -m esptool --chip esp32s3 -p $PORT -b 460800 write_flash 0xB00000 $assetsBin 0xC00000 $mainBin
+    } else {
+        & $venvPy -m esptool --chip esp32s3 -p $PORT -b 460800 write_flash 0xB00000 $assetsBin
+    }
     Write-Host ("ASSETS EXIT CODE: " + $LASTEXITCODE) -ForegroundColor Green
 }

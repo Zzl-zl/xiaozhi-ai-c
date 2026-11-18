@@ -108,6 +108,13 @@ bool xiaozhi_app_is_speaking(void)
 void xiaozhi_app_request_music(const char *url, const char *keyword)
 {
     if(s_speaking) {
+        bool new_specific = (url != NULL && url[0] != 0) || (keyword != NULL && keyword[0] != 0);
+        /* 已有具体请求（URL/关键词）时，忽略后来的"默认播放"，否则会覆盖掉搜索到的歌 */
+        if(s_pending_music && !new_specific &&
+           (s_pending_music_url[0] != 0 || s_pending_music_kw[0] != 0)) {
+            ESP_LOGI(TAG, "已有挂起的播放请求，忽略默认播放");
+            return;
+        }
         /* 还在说话：先挂起，等 TTS 结束再播（否则两路声音抢喇叭会破音/卡） */
         s_pending_music_url[0] = 0;
         s_pending_music_kw[0] = 0;
@@ -118,7 +125,8 @@ void xiaozhi_app_request_music(const char *url, const char *keyword)
             snprintf(s_pending_music_kw, sizeof(s_pending_music_kw), "%s", keyword);
         }
         s_pending_music = true;
-        ESP_LOGI(TAG, "小智还在说话，等说完再播放音乐");
+        ESP_LOGI(TAG, "小智还在说话，等说完再播放音乐（%s%s）",
+                 (url && url[0]) ? "URL" : "", (keyword && keyword[0]) ? keyword : "");
         return;
     }
 
@@ -491,13 +499,62 @@ void xiaozhi_app_start_listening(void)
     ESP_LOGI(TAG, "S7: 音频通道就绪（streaming=%d）", (int)s_streaming);
 }
 
+static void on_long_press(void);   /* 前置声明：5 击关机要用 */
+
 /**
- * @brief 按键回调（交给 button 模块调用）
+ * @brief 按键多击回调（交给 button 模块调用）
+ *
+ * 音乐播放中：1击=音量+10  2击=音量-10  3击=下一首
+ *            4击=停止播放并返回主界面  5击=关机
+ * 音乐未播放：1击=开始对话  5击=关机
  */
-static void on_button_press(void)
+static void on_multi_click(int clicks)
 {
-    ESP_LOGI(TAG, "按键触发对话");
-    xiaozhi_app_start_listening();
+    if(music_is_playing()) {
+        int vol = music_get_volume();
+        switch(clicks) {
+        case 1:
+            vol += 10;
+            if(vol > 100) {
+                vol = 100;
+            }
+            music_set_volume(vol);
+            ESP_LOGI(TAG, "音量 +10 -> %d%%", vol);
+            break;
+        case 2:
+            vol -= 10;
+            if(vol < 0) {
+                vol = 0;
+            }
+            music_set_volume(vol);
+            ESP_LOGI(TAG, "音量 -10 -> %d%%", vol);
+            break;
+        case 3:
+            ESP_LOGI(TAG, "下一首");
+            music_play_next();
+            break;
+        case 4:
+            ESP_LOGI(TAG, "停止播放，返回主界面");
+            music_stop();       /* 内部会 display_set_music_playing(false)，界面自动切回主界面 */
+            break;
+        case 5:
+            ESP_LOGI(TAG, "5 击 → 关机");
+            on_long_press();
+            break;
+        default:
+            ESP_LOGI(TAG, "%d 击：音乐中无此操作", clicks);
+            break;
+        }
+        return;
+    }
+    if(clicks == 1) {
+        ESP_LOGI(TAG, "按键触发对话");
+        xiaozhi_app_start_listening();
+    }
+    else if(clicks == 5) {
+        ESP_LOGI(TAG, "5 击 → 关机");
+        on_long_press();
+    }
 }
 
 /**
@@ -505,12 +562,12 @@ static void on_button_press(void)
  */
 static void on_wake_word(void)
 {
-    ESP_LOGI(TAG, "语音唤醒成功，开始对话");
     if(music_is_playing()) {
-        ESP_LOGI(TAG, "唤醒：音乐暂停（对话结束后原位继续）");
-        s_resume_music = true;
-        music_pause();          /* 暂停而不是停止：音量/停止等命令才能作用在正在播的音乐上 */
+        /* 按用户要求：音乐播放中不做语音对话，改用 BOOT 键多击控制音乐 */
+        ESP_LOGI(TAG, "音乐播放中，忽略语音唤醒（用 BOOT 键：1/2/3/4 击=音量+/音量-/下一首/停止）");
+        return;
     }
+    ESP_LOGI(TAG, "语音唤醒成功，开始对话");
     xiaozhi_app_start_listening();
 }
 
@@ -610,7 +667,7 @@ esp_err_t xiaozhi_app_start(void)
     /* 7. 音频发送任务 + 按键 */
     BaseType_t mic_ret = xTaskCreateWithCaps(mic_send_task, "mic_send", 32768, NULL, 6, NULL, MALLOC_CAP_SPIRAM);
     ESP_LOGI(TAG, "麦克风任务创建: %s", (mic_ret == pdPASS) ? "成功" : "失败");
-    ESP_RETURN_ON_ERROR(button_init(on_button_press, on_long_press), TAG, "按键初始化失败");
+    ESP_RETURN_ON_ERROR(button_init(on_multi_click, on_long_press), TAG, "按键初始化失败");
 
     return ESP_OK;
 }

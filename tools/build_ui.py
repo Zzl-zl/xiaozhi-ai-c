@@ -1,3 +1,4 @@
+"""DEPRECATED: replaced by img_to_c.py + pack_boot_anim.py"""
 # -*- coding: utf-8 -*-
 """
 从 ui_source/ 素材重新生成 LVGL C 数组（main/whale_anim.c、main/whale_assets.c）
@@ -149,7 +150,7 @@ def build_assets():
 
 
 
-BOOT_FRAME_COUNT = 30
+BOOT_FRAME_COUNT = 40
 BOOT_SIZE = 240
 
 

@@ -83,6 +83,23 @@ bool music_is_playing(void);
  */
 const char *music_status(void);
 
+/**
+ * @brief 当前歌曲名（搜索成功后有值，否则空串）
+ */
+const char *music_get_song_name(void);
+
+/**
+ * @brief 当前歌手名
+ */
+const char *music_get_song_artist(void);
+
+/**
+ * @brief 当前播放位置的歌词行（无歌词时返回空串）
+ *
+ * 与 music.c 内部播放进度对齐，可在任意任务调用（只读）
+ */
+const char *music_get_current_lyric(void);
+
 /* ---------- 手机 HTTP 上传流式播放（由 music.c 内部网页服务调用） ---------- */
 
 bool music_upload_begin(void);

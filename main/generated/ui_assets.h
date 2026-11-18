@@ -1,0 +1,22 @@
+/* 由 tools/img_to_c.py 生成，汇总所有 UI 资源头文件 */
+#pragma once
+
+#include "ui_boot_240.h"
+#include "ui_chatbg_240.h"
+#include "ui_emo_happy.h"
+#include "ui_emo_laugh.h"
+#include "ui_emo_neutral.h"
+#include "ui_emo_pout.h"
+#include "ui_emo_surprised.h"
+#include "ui_emo_thinking.h"
+#include "ui_f00.h"
+#include "ui_f01.h"
+#include "ui_f02.h"
+#include "ui_f03.h"
+#include "ui_f04.h"
+#include "ui_f05.h"
+#include "ui_f06.h"
+#include "ui_f07.h"
+#include "ui_main_char_160.h"
+#include "ui_musicbg_240.h"
+#include "ui_whale_icon_64.h"

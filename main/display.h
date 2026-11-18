@@ -96,6 +96,11 @@ void display_set_music_playing(bool playing);
 void display_set_music_info(const char *text);
 
 /**
+ * @brief 设置音乐界面歌词（当前一句，任意任务可调）
+ */
+void display_set_music_lyric(const char *text);
+
+/**
  * @brief 设置音乐电平 0~100（频谱条用，线程安全）
  */
 void display_set_music_level(uint8_t level);

@@ -28,6 +28,12 @@ esp_err_t speaker_init(void)
 {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
+    /* 默认 DMA 6x240x4≈5.7KB(1.4ms@44.1k) 偏小，网络/解码抖动时欠载 -> 卡顿。
+     * 小幅加到 6x320x4≈7.7KB(约 2.4ms)，只多占约 1.9KB 内部 RAM，安全。
+     * 不要加大到 8x384（12KB 会导致音频队列创建失败、对话业务起不来）。
+     * I2S DMA 缓冲无法放 PSRAM（DMA 只能访问内部 RAM）。 */
+    chan_cfg.dma_desc_num = 6;
+    chan_cfg.dma_frame_num = 480;   /* 6x320->480：WiFi 缓冲腾出的内部 RAM 支持 */
     ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &s_tx, NULL), TAG, "创建 I2S 通道失败");
 
     i2s_std_config_t std_cfg = board_i2s_config(AUDIO_OUT_RATE, SPK_I2S_BCLK, SPK_I2S_LRCK,
