@@ -682,6 +682,8 @@ static esp_err_t lvgl_port_init(void)
      * 内部 RAM 紧张时申请失败 → 屏幕花屏/掉帧 */
     /* 和 C++ 参考工程一致：LVGL 绘制缓冲放 PSRAM（省内部 RAM），
      * 刷屏时再拷到内部 DMA 中转缓冲去发 SPI */
+    /* 绘制缓冲留在 PSRAM（用户要求不移植 LVGL）：
+     * 移内部 RAM 会多占 11.2KB，反而挤爆 TLS 握手 */
     uint8_t *buf1 = heap_caps_malloc(DISP_BUF_H, MALLOC_CAP_SPIRAM);
     uint8_t *buf2 = heap_caps_malloc(DISP_BUF_H, MALLOC_CAP_SPIRAM);
     s_trans_buf = heap_caps_malloc(DISP_BUF_H, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
@@ -3395,7 +3397,11 @@ esp_err_t display_init(void)
 
     /* 关键：LVGL 任务栈必须放内部 RAM，否则刷屏命令参数不能直接 DMA，
      * 每次刷屏都要临时申请 bounce buffer，渲染会慢好几倍 */
-    xTaskCreate(lvgl_task, "lvgl", LVGL_TASK_STACK, NULL, 5, NULL);   /* LVGL 任务栈保留在内部 RAM */
+    /* 栈放 PSRAM 省约 8KB 内部 RAM（TLS/AES 终于不用抢内存了）。
+     * 代价：渲染略慢，但音乐播放时主界面动画本来就不刷，不影响音频 */
+    if(xTaskCreateWithCaps(lvgl_task, "lvgl", LVGL_TASK_STACK, NULL, 5, NULL, MALLOC_CAP_SPIRAM) != pdPASS) {
+        ESP_LOGW(TAG, "LVGL 任务创建失败");
+    }
     ESP_LOGI(TAG, "显示模块就绪（赛博朋克界面 + 时钟/天气 + 表情）");
     return ESP_OK;
 }

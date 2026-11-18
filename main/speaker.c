@@ -33,7 +33,7 @@ esp_err_t speaker_init(void)
      * 不要加大到 8x384（12KB 会导致音频队列创建失败、对话业务起不来）。
      * I2S DMA 缓冲无法放 PSRAM（DMA 只能访问内部 RAM）。 */
     chan_cfg.dma_desc_num = 6;
-    chan_cfg.dma_frame_num = 320;   /* 6x320：实测 480 会导致内部 RAM 不足、任务创建失败 */
+    chan_cfg.dma_frame_num = 480;   /* 6x480≈11.5KB(3.6ms)：800 会挤爆 TLS，480 是稳定档 */
     ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &s_tx, NULL), TAG, "创建 I2S 通道失败");
 
     i2s_std_config_t std_cfg = board_i2s_config(AUDIO_OUT_RATE, SPK_I2S_BCLK, SPK_I2S_LRCK,

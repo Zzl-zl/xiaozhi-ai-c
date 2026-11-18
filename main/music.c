@@ -1031,7 +1031,9 @@ esp_err_t music_init(void)
     }
     /* 按 C++/LVGL 的思路：任务栈放内部 RAM（响应快），PCM/解码缓冲仍留 PSRAM */
     /* 注意：music 任务栈必须放内部 RAM！esp_mp3_dec 是预编译库，栈在 PSRAM 时解码会失败 */
-    BaseType_t ret = xTaskCreate(music_task, "music", 10240, NULL, 5, &s_task);
+    /* 栈放 PSRAM：内部 RAM 太紧（TLS/AES 分配失败导致连接断开），
+     * 音乐解码用的是堆缓冲，栈放 PSRAM 影响可接受 */
+    BaseType_t ret = xTaskCreateWithCaps(music_task, "music", 10240, NULL, 5, &s_task, MALLOC_CAP_SPIRAM);
     if(ret != pdPASS) {
         ESP_LOGE(TAG, "音乐任务创建失败");
         return ESP_ERR_NO_MEM;
