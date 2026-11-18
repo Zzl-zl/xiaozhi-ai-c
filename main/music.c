@@ -359,6 +359,9 @@ static void write_pcm(const uint8_t *pcm, int size, int channels, int bits)
 
     const int16_t *src = (const int16_t *)pcm;
     int64_t sum = 0;
+    /* 一阶低通滤波：消掉帧边界/量化产生的高频毛刺（机械感杂音），
+     * 系数取得很小，对音质影响可忽略 */
+    static int32_t s_lp = 0;
     for(int i = 0; i < frames; i++) {
         int32_t v;
         if(channels == 1) {
@@ -367,7 +370,16 @@ static void write_pcm(const uint8_t *pcm, int size, int channels, int bits)
         else {
             v = ((int32_t)src[i * channels] + (int32_t)src[i * channels + 1]) / 2;
         }
-        v = v * s_volume / 100;
+        v = (v * 7 + s_lp * 1) / 8;
+        s_lp = v;
+        /* 四舍五入代替截断：低音量时截断误差会造成持续的量化噪声 */
+        v = (v * s_volume + (v >= 0 ? 50 : -50)) / 100;
+        if(v > 32767) {
+            v = 32767;
+        }
+        if(v < -32768) {
+            v = -32768;
+        }
         s_mono[i] = (int16_t)v;
         sum += (int64_t)v * v;
     }
